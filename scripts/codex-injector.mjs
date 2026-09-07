@@ -5,6 +5,7 @@ import { createHash, createHmac, randomBytes, randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { createReadStream, createWriteStream } from "node:fs";
 import { chmod, mkdir, readFile, rename, stat, unlink, utimes, writeFile } from "node:fs/promises";
+import { readFileSync } from "node:fs";
 import os from "node:os";
 import { createInterface } from "node:readline";
 import { pipeline } from "node:stream/promises";
@@ -50,6 +51,13 @@ const taskboardDataDirectory = process.env.CODEX_TASKBOARD_DATA_DIR
 const taskboardRuntimeFile = process.env.CODEX_TASKBOARD_RUNTIME_FILE
   ? path.resolve(process.env.CODEX_TASKBOARD_RUNTIME_FILE)
   : path.join(taskboardDataDirectory, "launcher-runtime.json");
+function sharedInstanceValue(filename) {
+  try {
+    return readFileSync(path.join(taskboardDataDirectory, filename), "utf8").trim();
+  } catch {
+    return "";
+  }
+}
 const taskboardListenFd = process.env.CODEX_TASKBOARD_LISTEN_FD === undefined
   ? null
   : Number(process.env.CODEX_TASKBOARD_LISTEN_FD);
@@ -65,11 +73,15 @@ const automationPoliciesPath = path.join(
   "codex-automation-policies.json",
 );
 const taskboardInstanceToken = (
-  process.env.CODEX_TASKBOARD_INSTANCE_TOKEN?.trim() || randomUUID()
+  process.env.CODEX_TASKBOARD_INSTANCE_TOKEN?.trim()
+  || sharedInstanceValue("instance-token")
+  || randomUUID()
 );
 process.env.CODEX_TASKBOARD_INSTANCE_TOKEN = taskboardInstanceToken;
 const taskboardInstanceSecret = (
-  process.env.CODEX_TASKBOARD_INSTANCE_SECRET?.trim() || randomBytes(32).toString("hex")
+  process.env.CODEX_TASKBOARD_INSTANCE_SECRET?.trim()
+  || sharedInstanceValue("instance-secret")
+  || randomBytes(32).toString("hex")
 );
 process.env.CODEX_TASKBOARD_INSTANCE_SECRET = taskboardInstanceSecret;
 const taskboardVersion = process.env.CODEX_TASKBOARD_VERSION?.trim() || "development";
@@ -77,7 +89,7 @@ process.env.CODEX_TASKBOARD_VERSION = taskboardVersion;
 const taskboardOrigin = `http://127.0.0.1:${resolvePort()}`;
 const taskboardHealthUrl = `${taskboardOrigin}/health`;
 const taskboardBaseUrl = `${taskboardOrigin}/${encodeURIComponent(taskboardInstanceToken)}`;
-const taskboardPageUrl = `${taskboardBaseUrl}/?host=codex`;
+const taskboardPageUrl = `${taskboardBaseUrl}/?host=codex&lang=zh`;
 const hostBindingName = "__codexTaskboardHostV1";
 const hostRequestMessage = "__codexTaskboardHostRequestV1";
 const hostResponseMessage = "__codexTaskboardHostResponseV1";
@@ -464,6 +476,7 @@ async function launchCodexWithLaunchServices(appPath, port, shouldStop = () => f
   const launcher = spawn(
     "/usr/bin/open",
     [
+      "-n",
       "-a",
       appPath,
       "--args",

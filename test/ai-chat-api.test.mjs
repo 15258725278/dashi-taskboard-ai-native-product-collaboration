@@ -5,6 +5,7 @@ import {
   createAiChatThread,
   deleteAiChatThread,
   getAiChatCatalog,
+  getProductCollaborationCatalog,
   getAiChatThread,
   interruptAiChatRun,
   listAiChatThreads,
@@ -147,6 +148,42 @@ test("aborted catalog requests preserve AbortError instead of reporting a servic
     );
   } finally {
     globalThis.fetch = previousFetch;
+  }
+});
+
+test("a missing API route reloads one stale frontend bundle without looping", async () => {
+  const previousFetch = globalThis.fetch;
+  const previousWindow = globalThis.window;
+  const previousSessionStorage = globalThis.sessionStorage;
+  const previousQuerySelector = globalThis.document.querySelector;
+  let reloads = 0;
+  const storage = new Map();
+  globalThis.document.querySelector = () => ({ src: `${taskboardBase}assets/index-stale.js` });
+  globalThis.window = { location: { reload: () => { reloads += 1; } } };
+  globalThis.sessionStorage = {
+    getItem: (key) => storage.get(key) ?? null,
+    setItem: (key, value) => storage.set(key, value),
+  };
+  globalThis.fetch = async () => json({
+    error: { code: "NOT_FOUND", message: "API route not found" },
+  }, 404);
+
+  try {
+    await assert.rejects(
+      () => getProductCollaborationCatalog("project-1"),
+      (error) => error.code === "API_VERSION_REFRESHING",
+    );
+    assert.equal(reloads, 1);
+    await assert.rejects(
+      () => getProductCollaborationCatalog("project-1"),
+      (error) => error.code === "NOT_FOUND",
+    );
+    assert.equal(reloads, 1);
+  } finally {
+    globalThis.fetch = previousFetch;
+    globalThis.window = previousWindow;
+    globalThis.sessionStorage = previousSessionStorage;
+    globalThis.document.querySelector = previousQuerySelector;
   }
 });
 

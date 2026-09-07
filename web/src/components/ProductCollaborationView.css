@@ -98,10 +98,66 @@
 
 .product-session-create {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
   gap: 6px;
   padding: 10px;
   border-bottom: var(--border-hairline) solid var(--border);
+}
+
+.product-session-create-primary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px;
+}
+
+.product-agent-create-settings,
+.product-agent-settings {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+}
+
+.product-agent-create-settings label,
+.product-agent-settings label {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 4px;
+  color: var(--text-tertiary);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.product-agent-create-settings label:first-child {
+  flex: 1;
+}
+
+.product-agent-create-settings select,
+.product-agent-settings select {
+  min-width: 0;
+  height: 26px;
+  padding: 0 22px 0 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-primary);
+  background: var(--surface);
+  font-size: 10px;
+  outline: none;
+}
+
+.product-agent-create-settings select {
+  width: 100%;
+}
+
+.product-agent-create-settings select:focus,
+.product-agent-settings select:focus {
+  border-color: var(--accent);
+}
+
+.product-agent-create-settings select:disabled,
+.product-agent-settings select:disabled {
+  color: var(--text-tertiary);
+  background: var(--surface-muted);
 }
 
 .product-session-create input {
@@ -246,6 +302,17 @@
   font-size: 11px;
 }
 
+.product-pane-actions {
+  display: flex;
+  flex: 0 0 auto;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.product-agent-settings select {
+  max-width: 132px;
+}
+
 .product-chat,
 .product-document-pane {
   display: flex;
@@ -303,6 +370,33 @@
 .product-message-content > :last-child { margin-bottom: 0; }
 .product-message-content pre { overflow: auto; }
 
+.product-message-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 7px;
+}
+
+.product-message-attachments > span {
+  display: inline-flex;
+  max-width: 220px;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 6px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-secondary);
+  background: var(--surface);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.product-message-attachments svg {
+  flex: 0 0 auto;
+}
+
 .product-agent-running {
   color: var(--text-tertiary);
 }
@@ -310,6 +404,53 @@
 .product-composer {
   position: relative;
   margin: 0 14px 14px;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: var(--surface);
+}
+
+.product-composer:focus-within {
+  border-color: var(--accent);
+}
+
+.product-composer-images {
+  display: flex;
+  gap: 8px;
+  padding: 9px 9px 0;
+  overflow-x: auto;
+}
+
+.product-composer-image {
+  position: relative;
+  flex: 0 0 64px;
+  width: 64px;
+  height: 64px;
+}
+
+.product-composer-image img {
+  display: block;
+  width: 64px;
+  height: 64px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  object-fit: cover;
+}
+
+.product-composer-image button {
+  position: absolute;
+  top: -5px;
+  right: -5px;
+  display: grid;
+  width: 18px;
+  height: 18px;
+  place-items: center;
+  padding: 0;
+  border: 1px solid var(--surface);
+  border-radius: 50%;
+  color: var(--surface);
+  background: var(--text-primary);
+  font-size: 14px;
+  line-height: 1;
 }
 
 .product-composer textarea {
@@ -318,15 +459,25 @@
   min-height: 86px;
   max-height: 180px;
   resize: vertical;
-  padding: 10px 42px 10px 11px;
-  border: 1px solid var(--border-strong);
+  padding: 10px 42px 34px 11px;
+  border: 0;
   border-radius: 6px;
-  background: var(--surface);
+  background: transparent;
   outline: none;
 }
 
 .product-composer textarea:focus {
-  border-color: var(--accent);
+  border-color: transparent;
+}
+
+.product-image-input {
+  display: none;
+}
+
+.product-image-button {
+  position: absolute;
+  left: 7px;
+  bottom: 7px;
 }
 
 .product-send-button {
@@ -578,6 +729,16 @@
   .product-document-actions {
     flex-wrap: wrap;
     justify-content: flex-start;
+  }
+
+  .product-pane-header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .product-pane-actions {
+    width: 100%;
+    justify-content: space-between;
   }
 
   .collaboration-artifact-path {

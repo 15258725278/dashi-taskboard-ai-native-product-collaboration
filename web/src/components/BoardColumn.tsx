@@ -37,6 +37,7 @@ interface BoardColumnProps {
   currentUser: ActorIdentity;
   showCover: boolean;
   showBody: boolean;
+  canWrite?: boolean;
   createEnabled?: boolean;
   onCreateLabel: (label: string, projectId?: string) => Promise<void>;
   onCreate: (status: TaskStatus) => void;
@@ -69,6 +70,7 @@ export function BoardColumn({
   currentUser,
   showCover,
   showBody,
+  canWrite = true,
   createEnabled = true,
   onCreateLabel,
   onCreate,
@@ -131,19 +133,19 @@ export function BoardColumn({
     <section
       className={`board-column status-${status}${isDropTarget ? " is-drop-target" : ""}`}
       aria-labelledby={`column-${status}`}
-      onDragEnter={() => onDragEnter(status)}
-      onDragOver={(event) => {
+      onDragEnter={canWrite ? () => onDragEnter(status) : undefined}
+      onDragOver={canWrite ? (event) => {
         event.preventDefault();
         event.dataTransfer.dropEffect = "move";
         onDragEnter(status);
         setDropBeforeTaskId(findDropBefore(event.currentTarget, event.clientY));
-      }}
-      onDragLeave={(event) => {
+      } : undefined}
+      onDragLeave={canWrite ? (event) => {
         if (!(event.relatedTarget instanceof Node) || !event.currentTarget.contains(event.relatedTarget)) {
           setDropBeforeTaskId(undefined);
         }
-      }}
-      onDrop={handleDrop}
+      } : undefined}
+      onDrop={canWrite ? handleDrop : undefined}
     >
       <header className="column-header">
         <div className="column-heading">
@@ -154,7 +156,7 @@ export function BoardColumn({
             {label}{tasks.length > 0 ? ` ${tasks.length}` : ""}
           </h2>
         </div>
-        {createEnabled && (
+        {canWrite && createEnabled && (
           <div className="column-actions">
             <button
               type="button"
@@ -188,6 +190,7 @@ export function BoardColumn({
               currentUser={currentUser}
               showCover={showCover}
               showBody={showBody}
+              canWrite={canWrite}
               onCreateLabel={(label) => onCreateLabel(label, task.projectId)}
               onEdit={onEdit}
               onUpdate={onUpdate}

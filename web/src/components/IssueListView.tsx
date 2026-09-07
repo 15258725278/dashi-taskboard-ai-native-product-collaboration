@@ -18,6 +18,7 @@ interface IssueListViewProps {
   presentations: Record<string, TaskCardPresentation>;
   currentUser: ActorIdentity;
   hasActiveFilters: boolean;
+  canWrite?: boolean;
   onOpenTask: (task: Task) => void;
   onOpenConversation: (conversation: TaskCardPresentation["conversations"][number]) => void;
   onUpdate: (task: Task, changes: Partial<TaskDraft>) => Promise<Task>;
@@ -38,6 +39,7 @@ export function IssueListView({
   presentations,
   currentUser,
   hasActiveFilters,
+  canWrite = true,
   onOpenTask,
   onOpenConversation,
   onUpdate,
@@ -109,6 +111,7 @@ export function IssueListView({
                               className="issue-list-property-picker"
                               triggerClassName={`issue-list-priority priority-${task.priority}`}
                               ariaLabel={text(`${displayIdentifier} 优先级`, `${displayIdentifier} priority`)}
+                              disabled={!canWrite}
                               onOpenChange={(open) => setPriorityMenuTaskId(open ? task.id : null)}
                               onChange={(priority) => void onUpdate(task, { priority }).catch(() => {})}
                             />
@@ -133,6 +136,7 @@ export function IssueListView({
                                 type="date"
                                 aria-label={text(`${displayIdentifier} 截止日期`, `${displayIdentifier} due date`)}
                                 value={task.dueDate}
+                                disabled={!canWrite}
                                 onChange={(event) => void onUpdate(task, {
                                   dueDate: event.target.value || null,
                                   ...(event.target.value ? {} : { recurrence: null }),
@@ -149,7 +153,7 @@ export function IssueListView({
                             <select
                               aria-label={text(`${displayIdentifier} 负责人`, `${displayIdentifier} assignee`)}
                               value={assigneeTarget}
-                              disabled={task.source === "jira"}
+                              disabled={!canWrite || task.source === "jira"}
                               onChange={(event) => void onUpdate(task, { assigneeTarget: event.target.value as "current-user" | "codex-agent" }).catch(() => {})}
                             >
                               <option value="current-user">{currentUser.name}</option>

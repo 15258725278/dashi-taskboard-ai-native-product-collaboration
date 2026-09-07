@@ -48,6 +48,18 @@ async function request(baseUrl, pathname, options = {}) {
   };
 }
 
+async function requestRaw(baseUrl, pathname, options = {}) {
+  const headers = new Headers(options.headers);
+  const response = await fetch(`${baseUrl}${pathname}`, {
+    ...options,
+    headers,
+    body: options.body === undefined || typeof options.body === "string"
+      ? options.body
+      : JSON.stringify(options.body),
+  });
+  return { response, text: await response.text() };
+}
+
 async function waitFor(predicate, timeout = 4_000) {
   const deadline = Date.now() + timeout;
   while (Date.now() < deadline) {
@@ -62,17 +74,32 @@ function basicAuthorization(username, password) {
   return `Basic ${Buffer.from(`${username}:${password}`).toString("base64")}`;
 }
 
+function responseCookies(response) {
+  return response.headers.getSetCookie?.() ?? [];
+}
+
+function cookiePair(setCookies, name) {
+  return setCookies.find((value) => value.startsWith(`${name}=`))?.split(";", 1)[0] ?? null;
+}
+
 async function createProductCollaborationCodexFixture(directory) {
   const executable = path.join(directory, "fake-product-codex.mjs");
   await writeFile(executable, `#!/usr/bin/env node
 import { readFileSync } from "node:fs";
 const args = process.argv.slice(2);
 if (args[0] === "debug" && args[1] === "models") {
-  process.stdout.write(JSON.stringify({models:[{
-    slug:"gpt-product", display_name:"GPT Product", description:"Fixture",
-    default_reasoning_level:"low", supported_reasoning_levels:[{effort:"low"}],
-    service_tiers:[]
-  }]}));
+  process.stdout.write(JSON.stringify({models:[
+    {
+      slug:"gpt-product", display_name:"GPT Product", description:"Fixture",
+      default_reasoning_level:"low", supported_reasoning_levels:[{effort:"low"}],
+      service_tiers:[]
+    },
+    {
+      slug:"gpt-product-pro", display_name:"GPT Product Pro", description:"Fixture Pro",
+      default_reasoning_level:"medium", supported_reasoning_levels:[{effort:"medium"},{effort:"high"}],
+      service_tiers:[]
+    }
+  ]}));
   process.exit(0);
 }
 if (args[0] === "app-server") {
@@ -219,6 +246,37 @@ test("launcher mode proves service identity and hides every route behind its ins
   });
   assert.equal(launcherApi.response.status, 200);
   assert.equal(launcherApi.response.headers.get("access-control-allow-origin"), "null");
+});
+
+test("authenticated public mode treats the token-authenticated Codex panel as local admin", async () => {
+  const instanceToken = "7a6f8d37-78ce-46c9-87a8-08e10db88da2";
+  const baseUrl = await startServer(() => ({
+    instanceToken,
+    instanceSecret: "2e587946-96d6-47b5-930a-1ba70214fa88",
+    processEnv: {
+      ...process.env,
+      CODEX_TASKBOARD_PUBLIC_USERS: JSON.stringify({
+        product: { password: "product-password", role: "product" },
+      }),
+    },
+  }));
+  const launcherHeaders = { origin: "null" };
+
+  const metadata = await request(baseUrl, `/${instanceToken}/api/meta`, {
+    headers: launcherHeaders,
+  });
+  assert.equal(metadata.response.status, 200);
+  assert.equal(metadata.body.capabilities.publicRole, "admin");
+  assert.equal(metadata.body.capabilities.productCollaborationWrite, true);
+  assert.equal(metadata.body.capabilities.technicalCollaborationWrite, true);
+  assert.equal(metadata.body.capabilities.taskWrite, true);
+
+  const createdProject = await request(baseUrl, `/${instanceToken}/api/projects`, {
+    method: "POST",
+    headers: launcherHeaders,
+    body: { id: "launcher-admin", name: "Launcher Admin" },
+  });
+  assert.equal(createdProject.response.status, 201);
 });
 
 test("existing task and comment thread attribution remains content-specific", async () => {
@@ -690,6 +748,13 @@ test("public product and technical roles complete an isolated product-to-develop
   const technicalHeaders = { authorization: basicAuthorization("technical", technicalPassword) };
   const adminHeaders = { authorization: basicAuthorization("admin", adminPassword) };
 
+  const logout = await request(baseUrl, "/logout", { method: "POST" });
+  assert.equal(logout.response.status, 204);
+  assert.match(
+    cookiePair(responseCookies(logout.response), "codex_taskboard_logged_out") ?? "",
+    /^codex_taskboard_logged_out=1$/,
+  );
+
   const productMeta = await request(baseUrl, "/api/meta", { headers: productHeaders });
   assert.deepEqual(productMeta.body.currentActor, {
     type: "user",
@@ -718,6 +783,18 @@ test("public product and technical roles complete an isolated product-to-develop
     body: { id: "skillhub", name: "SkillHub", workspacePath },
   });
   assert.equal(createdProject.response.status, 201);
+
+  const productCatalog = await request(
+    baseUrl,
+    "/api/product-collaboration/catalog?projectId=skillhub",
+    { headers: productHeaders },
+  );
+  assert.equal(productCatalog.response.status, 200);
+  assert.deepEqual(
+    productCatalog.body.models.map((model) => model.slug),
+    ["gpt-product", "gpt-product-pro"],
+  );
+  assert.equal(JSON.stringify(productCatalog.body).includes("skills"), false);
 
   const noBlueprintWorkspace = path.join(path.dirname(workspacePath), "no-blueprint-workspace");
   await mkdir(noBlueprintWorkspace);
@@ -752,7 +829,12 @@ test("public product and technical roles complete an isolated product-to-develop
   const createdSession = await request(baseUrl, "/api/product-sessions", {
     method: "POST",
     headers: productHeaders,
-    body: { projectId: "skillhub", title: "Improve Skill installation feedback" },
+    body: {
+      projectId: "skillhub",
+      title: "Improve Skill installation feedback",
+      model: "gpt-product-pro",
+      reasoningEffort: "high",
+    },
   });
   assert.equal(createdSession.response.status, 201);
   const session = createdSession.body.session;
@@ -771,6 +853,43 @@ test("public product and technical roles complete an isolated product-to-develop
     .update("\0")
     .digest("hex");
   assert.equal(draftFeatureState.blueprintBaselineHash, `sha256:${expectedBlueprintHash}`);
+
+  const configuredSnapshot = await request(
+    baseUrl,
+    `/api/product-sessions/${session.id}`,
+    { headers: productHeaders },
+  );
+  assert.deepEqual(configuredSnapshot.body.productAgent, {
+    model: "gpt-product-pro",
+    reasoningEffort: "high",
+  });
+  assert.equal(configuredSnapshot.body.technicalAgent, null);
+
+  const updatedProductAgent = await request(
+    baseUrl,
+    `/api/product-sessions/${session.id}/product-agent-settings`,
+    {
+      method: "PATCH",
+      headers: productHeaders,
+      body: { model: "gpt-product", reasoningEffort: "low" },
+    },
+  );
+  assert.equal(updatedProductAgent.response.status, 200);
+  assert.deepEqual(updatedProductAgent.body.settings, {
+    model: "gpt-product",
+    reasoningEffort: "low",
+  });
+
+  const forbiddenProductAgentUpdate = await request(
+    baseUrl,
+    `/api/product-sessions/${session.id}/product-agent-settings`,
+    {
+      method: "PATCH",
+      headers: technicalHeaders,
+      body: { model: "gpt-product-pro", reasoningEffort: "medium" },
+    },
+  );
+  assert.equal(forbiddenProductAgentUpdate.response.status, 403);
 
   const secondSession = await request(baseUrl, "/api/product-sessions", {
     method: "POST",
@@ -901,11 +1020,41 @@ test("public product and technical roles complete an isolated product-to-develop
   assert.equal(technicalTakeover.body.task.status, "in_progress");
   assert.equal(technicalTakeover.body.task.assignee.name, "Tech Owner");
 
+  const updatedTechnicalAgent = await request(
+    baseUrl,
+    `/api/product-sessions/${session.id}/technical-agent-settings`,
+    {
+      method: "PATCH",
+      headers: technicalHeaders,
+      body: { model: "gpt-product-pro", reasoningEffort: "high" },
+    },
+  );
+  assert.equal(updatedTechnicalAgent.response.status, 200);
+  assert.deepEqual(updatedTechnicalAgent.body.settings, {
+    model: "gpt-product-pro",
+    reasoningEffort: "high",
+  });
+
+  const forbiddenTechnicalAgentUpdate = await request(
+    baseUrl,
+    `/api/product-sessions/${session.id}/technical-agent-settings`,
+    {
+      method: "PATCH",
+      headers: productHeaders,
+      body: { model: "gpt-product", reasoningEffort: "low" },
+    },
+  );
+  assert.equal(forbiddenTechnicalAgentUpdate.response.status, 403);
+
   const technicalSnapshot = await request(baseUrl, `/api/product-sessions/${session.id}`, {
     headers: technicalHeaders,
   });
   assert.equal(technicalSnapshot.response.status, 200);
   assert.equal(technicalSnapshot.body.session.productDocument.startsWith("# Improve installation feedback"), true);
+  assert.deepEqual(technicalSnapshot.body.technicalAgent, {
+    model: "gpt-product-pro",
+    reasoningEffort: "high",
+  });
 
   const forbiddenTechnicalTurn = await request(
     baseUrl,
@@ -1171,6 +1320,89 @@ test("public product and technical roles complete an isolated product-to-develop
   );
   assert.equal(closedResubmission.response.status, 409);
   assert.equal(closedResubmission.body.error.code, "DELIVERY_ALREADY_CLOSED");
+});
+
+test("public logout blocks cached Basic credentials until an explicit account login", async () => {
+  const productPassword = "product-password-123";
+  const technicalPassword = "technical-password-123";
+  const baseUrl = await startServer(async () => ({
+    processEnv: {
+      ...process.env,
+      CODEX_TASKBOARD_PUBLIC_USERS: JSON.stringify({
+        product: { password: productPassword, role: "product", name: "Product Owner" },
+        technical: { password: technicalPassword, role: "technical", name: "Tech Owner" },
+      }),
+    },
+  }));
+  const cachedBasic = basicAuthorization("product", productPassword);
+
+  const initial = await request(baseUrl, "/api/meta", {
+    headers: { authorization: cachedBasic },
+  });
+  assert.equal(initial.response.status, 200);
+  const initialSession = cookiePair(
+    responseCookies(initial.response),
+    "codex_taskboard_session",
+  );
+  assert.ok(initialSession);
+
+  const logout = await request(baseUrl, "/logout", {
+    method: "POST",
+    headers: { authorization: cachedBasic, cookie: initialSession },
+  });
+  assert.equal(logout.response.status, 204);
+  const loggedOutCookie = cookiePair(
+    responseCookies(logout.response),
+    "codex_taskboard_logged_out",
+  );
+  assert.equal(loggedOutCookie, "codex_taskboard_logged_out=1");
+
+  const refreshedPage = await requestRaw(baseUrl, "/", {
+    redirect: "manual",
+    headers: {
+      accept: "text/html",
+      authorization: cachedBasic,
+      cookie: loggedOutCookie,
+    },
+  });
+  assert.equal(refreshedPage.response.status, 303);
+  assert.equal(refreshedPage.response.headers.get("location"), "login");
+
+  const signedOutApi = await request(baseUrl, "/api/meta", {
+    headers: { authorization: cachedBasic, cookie: loggedOutCookie },
+  });
+  assert.equal(signedOutApi.response.status, 401);
+  assert.equal(signedOutApi.body.error.code, "SIGNED_OUT");
+  assert.equal(signedOutApi.response.headers.get("www-authenticate"), null);
+
+  const loginPage = await requestRaw(baseUrl, "/login");
+  assert.equal(loginPage.response.status, 200);
+  assert.match(loginPage.response.headers.get("content-type") ?? "", /^text\/html/);
+
+  const login = await request(baseUrl, "/login", {
+    method: "POST",
+    redirect: "manual",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      username: "technical",
+      password: technicalPassword,
+    }).toString(),
+  });
+  assert.equal(login.response.status, 303);
+  assert.equal(login.response.headers.get("location"), "./");
+  const loginCookies = responseCookies(login.response);
+  const technicalSession = cookiePair(loginCookies, "codex_taskboard_session");
+  assert.ok(technicalSession);
+
+  const switched = await request(baseUrl, "/api/meta", {
+    headers: {
+      authorization: cachedBasic,
+      cookie: technicalSession,
+    },
+  });
+  assert.equal(switched.response.status, 200);
+  assert.equal(switched.body.currentActor.name, "Tech Owner");
+  assert.equal(switched.body.capabilities.publicRole, "technical");
 });
 
 test("trusted HTTPS origins apply to cloud WebSocket upgrades without widening loopback routes", async () => {

@@ -37,6 +37,7 @@ interface GanttViewProps {
   zoom: GanttZoom;
   hideCompleted: boolean;
   todayRequest: number;
+  canWrite?: boolean;
   onOpenTask: (task: Task) => void;
   onUpdate: (task: Task, changes: Partial<TaskDraft>) => Promise<Task>;
 }
@@ -106,7 +107,7 @@ function dateCellClass(date: Date) {
   return classes.join(" ");
 }
 
-export function GanttView({ tasks, presentations, hasActiveFilters, zoom, hideCompleted, todayRequest, onOpenTask, onUpdate }: GanttViewProps) {
+export function GanttView({ tasks, presentations, hasActiveFilters, zoom, hideCompleted, todayRequest, canWrite = true, onOpenTask, onUpdate }: GanttViewProps) {
   const { language, locale, text } = useTaskboardI18n();
   const i18nRef = useRef({ language, locale, text });
   const containerRef = useRef<HTMLDivElement>(null);
@@ -148,6 +149,7 @@ export function GanttView({ tasks, presentations, hasActiveFilters, zoom, hideCo
     instance.config.show_unscheduled = true;
     instance.config.smart_rendering = true;
     instance.config.details_on_dblclick = false;
+    instance.config.readonly = !canWrite;
     instance.config.round_dnd_dates = true;
     instance.config.select_task = false;
     instance.config.columns = [
@@ -333,7 +335,7 @@ export function GanttView({ tasks, presentations, hasActiveFilters, zoom, hideCo
       ganttRef.current = null;
       instance.destructor();
     };
-  }, []);
+  }, [canWrite]);
 
   useEffect(() => {
     const instance = ganttRef.current;

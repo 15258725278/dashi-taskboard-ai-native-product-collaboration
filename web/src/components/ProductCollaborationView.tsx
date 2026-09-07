@@ -1,4 +1,12 @@
-import { useCallback, useDeferredValue, useEffect, useMemo, useState } from "react";
+import {
+  useCallback,
+  useDeferredValue,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import type { ChangeEvent, ClipboardEvent } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
@@ -6,6 +14,7 @@ import {
   approveProductSession,
   approveTechnicalDocument,
   createProductSession,
+  getProductCollaborationCatalog,
   getProductSession,
   listProductSessions,
   recordProductAcceptance,
@@ -15,10 +24,21 @@ import {
   startTechnicalSessionTurn,
   submitProductAcceptanceReview,
   subscribeProductSession,
+  updateProductSessionAgentSettings,
+  updateTechnicalSessionAgentSettings,
 } from "../api";
+import { reasoningEffortForModel } from "../aiChatState";
 import { useTaskboardI18n } from "../i18n";
-import type { ProductSession, ProductSessionSnapshot, Task } from "../types";
-import { PlusIcon, SendIcon } from "./SemanticIcons";
+import type {
+  AiChatModel,
+  AiChatAttachmentInput,
+  ProductAgentSettings,
+  ProductAiEvent,
+  ProductSession,
+  ProductSessionSnapshot,
+  Task,
+} from "../types";
+import { AttachmentIcon, PlusIcon, SendIcon } from "./SemanticIcons";
 import "./ProductCollaborationView.css";
 
 interface ProductCollaborationViewProps {
@@ -46,6 +66,38 @@ const DELIVERY_STATUS_LABELS = {
   accepted: ["已完成", "Completed"],
 } as const;
 
+const EFFORT_LABELS: Record<string, readonly [string, string]> = {
+  minimal: ["最低", "Minimal"],
+  low: ["轻度", "Low"],
+  medium: ["中", "Medium"],
+  high: ["高", "High"],
+  xhigh: ["极高", "Extra high"],
+  max: ["最高", "Maximum"],
+  ultra: ["超高", "Ultra"],
+};
+
+const PRODUCT_IMAGE_TYPES = new Set([
+  "image/gif",
+  "image/jpeg",
+  "image/png",
+  "image/webp",
+]);
+
+interface PendingProductImage extends AiChatAttachmentInput {
+  id: string;
+  previewUrl: string;
+}
+
+function eventAttachments(event: ProductAiEvent) {
+  const values = event.data?.attachments;
+  if (!Array.isArray(values)) return [];
+  return values.flatMap((value) => {
+    if (!value || typeof value !== "object") return [];
+    const attachment = value as Record<string, unknown>;
+    return typeof attachment.filename === "string" ? [attachment.filename] : [];
+  });
+}
+
 export function ProductCollaborationView({
   projectId,
   canWrite,
@@ -64,9 +116,13 @@ export function ProductCollaborationView({
   const [sessionStatus, setSessionStatus] = useState<ProductSession["status"] | "all">("all");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [snapshot, setSnapshot] = useState<ProductSessionSnapshot | null>(null);
+  const [models, setModels] = useState<AiChatModel[]>([]);
   const [newTitle, setNewTitle] = useState("");
+  const [newModel, setNewModel] = useState("");
+  const [newReasoningEffort, setNewReasoningEffort] = useState("");
   const [creating, setCreating] = useState(false);
   const [message, setMessage] = useState("");
+  const [images, setImages] = useState<PendingProductImage[]>([]);
   const [document, setDocument] = useState("");
   const [technicalDocument, setTechnicalDocument] = useState("");
   const [documentTab, setDocumentTab] = useState<"product" | "technical">("product");
@@ -78,6 +134,8 @@ export function ProductCollaborationView({
   const [testDeploymentPrNumbers, setTestDeploymentPrNumbers] = useState("");
   const [acceptanceNote, setAcceptanceNote] = useState("");
   const [busy, setBusy] = useState(false);
+  const [settingsSaving, setSettingsSaving] = useState(false);
+  const imageInputRef = useRef<HTMLInputElement>(null);
 
   const refreshList = useCallback(async () => {
     const result = await listProductSessions(projectId, {
@@ -121,6 +179,22 @@ export function ProductCollaborationView({
   }, [projectId]);
 
   useEffect(() => {
+    const controller = new AbortController();
+    setModels([]);
+    void getProductCollaborationCatalog(projectId, controller.signal)
+      .then((catalog) => {
+        setModels(catalog.models);
+        const defaultModel = catalog.models[0];
+        setNewModel(defaultModel?.slug ?? "");
+        setNewReasoningEffort(defaultModel?.defaultReasoningEffort ?? "");
+      })
+      .catch((error) => {
+        if (!controller.signal.aborted) onError(error);
+      });
+    return () => controller.abort();
+  }, [onError, projectId]);
+
+  useEffect(() => {
     void refreshList().catch(onError);
   }, [onError, refreshList]);
 
@@ -162,6 +236,20 @@ export function ProductCollaborationView({
   const technicalTask = snapshot?.session.technicalTaskId
     ? tasks.find((task) => task.id === snapshot.session.technicalTaskId) ?? null
     : null;
+  const defaultAgentSettings = useMemo<ProductAgentSettings | null>(() => {
+    const model = models[0];
+    return model ? {
+      model: model.slug,
+      reasoningEffort: model.defaultReasoningEffort,
+    } : null;
+  }, [models]);
+  const activeAgentSettings = technicalMode
+    ? snapshot?.technicalAgent ?? defaultAgentSettings
+    : snapshot?.productAgent ?? defaultAgentSettings;
+  const activeModel = models.find((model) => model.slug === activeAgentSettings?.model) ?? models[0];
+  const canConfigureAgent = technicalMode
+    ? canTechnicalWrite && !technicalApproved
+    : canWrite && !isApproved;
 
   const sessionStage = useCallback((session: ProductSession) => {
     const task = session.technicalTaskId
@@ -177,6 +265,7 @@ export function ProductCollaborationView({
 
   useEffect(() => {
     setDocumentTab(technicalMode ? "technical" : "product");
+    setImages([]);
   }, [selectedId, technicalMode]);
 
   useEffect(() => {
@@ -193,7 +282,12 @@ export function ProductCollaborationView({
     if (!title) return;
     setBusy(true);
     try {
-      const session = await createProductSession({ projectId, title });
+      const session = await createProductSession({
+        projectId,
+        title,
+        ...(newModel ? { model: newModel } : {}),
+        ...(newReasoningEffort ? { reasoningEffort: newReasoningEffort } : {}),
+      });
       setPage(1);
       setSessionQuery("");
       setSessionStatus("all");
@@ -208,15 +302,105 @@ export function ProductCollaborationView({
     }
   }
 
+  async function saveAgentSettings(next: ProductAgentSettings) {
+    if (!snapshot || !canConfigureAgent || isRunning) return;
+    setSettingsSaving(true);
+    try {
+      const settings = technicalMode
+        ? await updateTechnicalSessionAgentSettings(snapshot.session.id, next)
+        : await updateProductSessionAgentSettings(snapshot.session.id, next);
+      setSnapshot((current) => current ? {
+        ...current,
+        ...(technicalMode ? { technicalAgent: settings } : { productAgent: settings }),
+      } : current);
+    } catch (error) {
+      onError(error);
+    } finally {
+      setSettingsSaving(false);
+    }
+  }
+
+  function selectNewModel(modelSlug: string) {
+    const model = models.find((candidate) => candidate.slug === modelSlug);
+    if (!model) return;
+    setNewModel(model.slug);
+    setNewReasoningEffort(reasoningEffortForModel(model, newReasoningEffort));
+  }
+
+  function selectActiveModel(modelSlug: string) {
+    const model = models.find((candidate) => candidate.slug === modelSlug);
+    if (!model) return;
+    void saveAgentSettings({
+      model: model.slug,
+      reasoningEffort: reasoningEffortForModel(model, activeAgentSettings?.reasoningEffort),
+    });
+  }
+
+  async function addImages(files: File[]) {
+    const accepted = files
+      .filter((file) => PRODUCT_IMAGE_TYPES.has(file.type))
+      .slice(0, Math.max(0, 10 - images.length));
+    if (accepted.length === 0) return;
+    try {
+      const next = await Promise.all(accepted.map((file, index) => (
+        new Promise<PendingProductImage>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => {
+            if (typeof reader.result !== "string") {
+              reject(new Error(text(`无法读取图片 ${file.name}`, `Could not read ${file.name}`)));
+              return;
+            }
+            const separator = reader.result.indexOf(",");
+            resolve({
+              id: `${file.name}-${file.size}-${file.lastModified}-${Date.now()}-${index}`,
+              filename: file.name,
+              contentType: file.type,
+              dataBase64: reader.result.slice(separator + 1),
+              previewUrl: reader.result,
+            });
+          };
+          reader.onerror = () => reject(new Error(text(
+            `无法读取图片 ${file.name}`,
+            `Could not read ${file.name}`,
+          )));
+          reader.readAsDataURL(file);
+        })
+      )));
+      setImages((current) => [...current, ...next].slice(0, 10));
+    } catch (error) {
+      onError(error);
+    }
+  }
+
+  function selectImages(event: ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(event.currentTarget.files ?? []);
+    event.currentTarget.value = "";
+    void addImages(files);
+  }
+
+  function pasteImages(event: ClipboardEvent<HTMLTextAreaElement>) {
+    const files = Array.from(event.clipboardData.files)
+      .filter((file) => PRODUCT_IMAGE_TYPES.has(file.type));
+    if (files.length === 0) return;
+    event.preventDefault();
+    void addImages(files);
+  }
+
   async function sendMessage() {
     const canSend = technicalMode ? canTechnicalWrite && !technicalApproved : canWrite && !isApproved;
-    if (!canSend || !snapshot || !message.trim() || isRunning) return;
+    if (!canSend || !snapshot || (!message.trim() && images.length === 0) || isRunning) return;
     const content = message.trim();
+    const attachments = images.map(({ filename, contentType, dataBase64 }) => ({
+      filename,
+      contentType,
+      dataBase64,
+    }));
     setBusy(true);
     try {
-      if (technicalMode) await startTechnicalSessionTurn(snapshot.session.id, content);
-      else await startProductSessionTurn(snapshot.session.id, content);
+      if (technicalMode) await startTechnicalSessionTurn(snapshot.session.id, content, attachments);
+      else await startProductSessionTurn(snapshot.session.id, content, attachments);
       setMessage("");
+      setImages([]);
       await refreshSession(snapshot.session.id);
     } catch (error) {
       onError(error);
@@ -379,16 +563,47 @@ export function ProductCollaborationView({
             event.preventDefault();
             void createSession();
           }}>
-            <input
-              autoFocus
-              value={newTitle}
-              onChange={(event) => setNewTitle(event.target.value)}
-              placeholder={text("需求名称", "Request name")}
-              maxLength={160}
-            />
-            <button className="button primary" type="submit" disabled={busy || !newTitle.trim()}>
-              {text("创建", "Create")}
-            </button>
+            <div className="product-session-create-primary">
+              <input
+                autoFocus
+                value={newTitle}
+                onChange={(event) => setNewTitle(event.target.value)}
+                placeholder={text("需求名称", "Request name")}
+                maxLength={160}
+              />
+              <button className="button primary" type="submit" disabled={busy || !newTitle.trim()}>
+                {text("创建", "Create")}
+              </button>
+            </div>
+            <div className="product-agent-create-settings">
+              <label>
+                <span>{text("模型", "Model")}</span>
+                <select
+                  value={newModel}
+                  onChange={(event) => selectNewModel(event.target.value)}
+                  disabled={models.length === 0}
+                >
+                  {models.map((model) => (
+                    <option value={model.slug} key={model.slug}>{model.displayName}</option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                <span>{text("思考", "Reasoning")}</span>
+                <select
+                  value={newReasoningEffort}
+                  onChange={(event) => setNewReasoningEffort(event.target.value)}
+                  disabled={!newModel}
+                >
+                  {(models.find((model) => model.slug === newModel)?.supportedReasoningEfforts ?? [])
+                    .map((effort) => (
+                      <option value={effort} key={effort}>
+                        {EFFORT_LABELS[effort] ? text(...EFFORT_LABELS[effort]) : effort}
+                      </option>
+                    ))}
+                </select>
+              </label>
+            </div>
           </form>
         )}
         <div className="product-session-filters">
@@ -487,17 +702,54 @@ export function ProductCollaborationView({
                   )}
                 </div>
               </div>
-              {snapshot.session.technicalTaskId && (
-                <button
-                  className="technical-task-link"
-                  type="button"
-                  onClick={() => onOpenTask(snapshot.session.technicalTaskId!)}
-                >
-                  {technicalTask
-                    ? text(`开发任务 ${technicalTask.identifier}`, `Development issue ${technicalTask.identifier}`)
-                    : text("打开技术任务", "Open technical issue")}
-                </button>
-              )}
+              <div className="product-pane-actions">
+                {activeAgentSettings && (
+                  <div className="product-agent-settings" aria-label={text("Agent 模型配置", "Agent model settings")}>
+                    <label>
+                      <span>{text("模型", "Model")}</span>
+                      <select
+                        value={activeAgentSettings.model}
+                        onChange={(event) => selectActiveModel(event.target.value)}
+                        disabled={!canConfigureAgent || isRunning || settingsSaving || models.length === 0}
+                        aria-label={text("选择模型", "Select model")}
+                      >
+                        {models.map((model) => (
+                          <option value={model.slug} key={model.slug}>{model.displayName}</option>
+                        ))}
+                      </select>
+                    </label>
+                    <label>
+                      <span>{text("思考", "Reasoning")}</span>
+                      <select
+                        value={activeAgentSettings.reasoningEffort}
+                        onChange={(event) => void saveAgentSettings({
+                          model: activeAgentSettings.model,
+                          reasoningEffort: event.target.value,
+                        })}
+                        disabled={!canConfigureAgent || isRunning || settingsSaving || !activeModel}
+                        aria-label={text("选择思考强度", "Select reasoning effort")}
+                      >
+                        {(activeModel?.supportedReasoningEfforts ?? []).map((effort) => (
+                          <option value={effort} key={effort}>
+                            {EFFORT_LABELS[effort] ? text(...EFFORT_LABELS[effort]) : effort}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
+                )}
+                {snapshot.session.technicalTaskId && (
+                  <button
+                    className="technical-task-link"
+                    type="button"
+                    onClick={() => onOpenTask(snapshot.session.technicalTaskId!)}
+                  >
+                    {technicalTask
+                      ? text(`开发任务 ${technicalTask.identifier}`, `Development issue ${technicalTask.identifier}`)
+                      : text("打开技术任务", "Open technical issue")}
+                  </button>
+                )}
+              </div>
             </header>
             <div className="product-message-list">
               {visibleEvents.map((event) => (
@@ -508,16 +760,42 @@ export function ProductCollaborationView({
                       ? "Agent"
                       : text("错误", "Error")}</span>
                   <div className="product-message-content">
-                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{event.content}</ReactMarkdown>
+                    {event.content && <ReactMarkdown remarkPlugins={[remarkGfm]}>{event.content}</ReactMarkdown>}
+                    {eventAttachments(event).length > 0 && (
+                      <div className="product-message-attachments">
+                        {eventAttachments(event).map((filename, index) => (
+                          <span key={`${filename}-${index}`}>
+                            <AttachmentIcon color="currentColor" />
+                            {filename}
+                          </span>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 </article>
               ))}
               {isRunning && <div className="product-agent-running">{text("Agent 正在整理…", "Agent is working…")}</div>}
             </div>
             <div className="product-composer">
+              {images.length > 0 && (
+                <div className="product-composer-images">
+                  {images.map((image) => (
+                    <div className="product-composer-image" key={image.id}>
+                      <img src={image.previewUrl} alt={image.filename} />
+                      <button
+                        type="button"
+                        onClick={() => setImages((current) => current.filter((item) => item.id !== image.id))}
+                        aria-label={text(`移除图片 ${image.filename}`, `Remove image ${image.filename}`)}
+                        title={text("移除图片", "Remove image")}
+                      >×</button>
+                    </div>
+                  ))}
+                </div>
+              )}
               <textarea
                 value={message}
                 onChange={(event) => setMessage(event.target.value)}
+                onPaste={pasteImages}
                 onKeyDown={(event) => {
                   if (event.key === "Enter" && !event.shiftKey) {
                     event.preventDefault();
@@ -529,11 +807,32 @@ export function ProductCollaborationView({
                   : text("继续澄清需求…", "Continue the product discussion…")}
                 disabled={technicalMode ? technicalApproved || !canTechnicalWrite : isApproved || !canWrite}
               />
+              <input
+                ref={imageInputRef}
+                className="product-image-input"
+                type="file"
+                accept="image/png,image/jpeg,image/gif,image/webp"
+                multiple
+                tabIndex={-1}
+                onChange={selectImages}
+              />
+              <button
+                className="icon-button product-image-button"
+                type="button"
+                onClick={() => imageInputRef.current?.click()}
+                disabled={busy || isRunning || images.length >= 10 || (technicalMode
+                  ? !canTechnicalWrite || technicalApproved
+                  : !canWrite || isApproved)}
+                aria-label={text("添加图片", "Add images")}
+                title={text("添加图片", "Add images")}
+              >
+                <AttachmentIcon color="currentColor" />
+              </button>
               <button
                 className="icon-button product-send-button"
                 type="button"
                 onClick={() => void sendMessage()}
-                disabled={busy || isRunning || !message.trim() || (technicalMode
+                disabled={busy || isRunning || (!message.trim() && images.length === 0) || (technicalMode
                   ? !canTechnicalWrite || technicalApproved
                   : !canWrite || isApproved)}
                 aria-label={text("发送", "Send")}
