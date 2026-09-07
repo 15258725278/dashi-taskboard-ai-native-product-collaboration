@@ -183,6 +183,27 @@ To use a different UI origin, set `window.__CODEX_TASKBOARD_URL__` before the us
 | `CODEX_TASKBOARD_TRUSTED_ORIGINS` | unset | Comma-separated exact HTTPS origins allowed through a loopback reverse tunnel |
 | `CODEX_TASKBOARD_DATA_DIR` | `.data` | SQLite data directory |
 | `CODEX_TASKBOARD_URL` | `http://127.0.0.1:47823` | CLI API origin |
+| `CODEX_TASKBOARD_DELIVERY_PROJECTS` | unset | JSON project map for automatic acceptance deployments |
+
+Automatic product acceptance deployment is configured once per project. The
+technical task must be bound to the branch that owns its open PR. When that
+task enters `in_review`, Taskboard dispatches the configured GitHub Actions
+workflow, tracks it, downloads its delivery manifest, and fills the acceptance
+record automatically.
+
+```json
+{
+  "skillhub": {
+    "repository": "15258725278/skillhub",
+    "workflow": "pr-batch-test-deploy.yml",
+    "workflowRef": "main",
+    "baseRef": "main",
+    "deployChannel": "manual-test-hk",
+    "acceptanceUrl": "https://skill.xf-yun.com.cn",
+    "ghExecutable": "/absolute/path/to/gh"
+  }
+}
+```
 
 `npm start` prints both the local URL and the available LAN URLs. Teammates on the same trusted network can open one of those LAN URLs and use the same taskboard service. Task, comment, and attachment changes are broadcast to every open client through server-sent events; reconnecting clients perform a full refresh so changes made while disconnected are not missed. A teammate using `taskctl` can point it at the shared service with `CODEX_TASKBOARD_URL=http://<host-ip>:47823`.
 
