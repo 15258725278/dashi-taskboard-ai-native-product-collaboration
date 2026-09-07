@@ -59,6 +59,9 @@ const TRUSTED_ORIGINS_ENV = "CODEX_TASKBOARD_TRUSTED_ORIGINS";
 const PUBLIC_SHARED_SECRET_ENV = "CODEX_TASKBOARD_PUBLIC_SHARED_SECRET";
 const PUBLIC_USERS_ENV = "CODEX_TASKBOARD_PUBLIC_USERS";
 const PUBLIC_ROLES = new Set(["product", "technical", "admin"]);
+const PUBLIC_SESSION_COOKIE = "codex_taskboard_session";
+const PUBLIC_LOGGED_OUT_COOKIE = "codex_taskboard_logged_out";
+const PUBLIC_SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const CODEX_AGENT_ACTOR = {
   type: "agent",
   id: "codex-agent",
@@ -95,6 +98,17 @@ function sendJson(response, status, value, headers = {}) {
 function sendEmpty(response, status, headers = {}) {
   response.writeHead(status, { "cache-control": "no-store", ...headers });
   response.end();
+}
+
+function sendHtml(response, status, body, headers = {}) {
+  response.writeHead(status, {
+    "cache-control": "no-store",
+    "content-length": Buffer.byteLength(body),
+    "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
+    "content-type": "text/html; charset=utf-8",
+    ...headers,
+  });
+  response.end(body);
 }
 
 function toFetchRequest(request) {
@@ -644,6 +658,114 @@ function publicPasswordDigest(value) {
   return createHash("sha256").update(value).digest();
 }
 
+function parseCookies(request) {
+  const cookies = new Map();
+  for (const part of String(requestHeader(request, "cookie") ?? "").split(";")) {
+    const separator = part.indexOf("=");
+    if (separator < 1) continue;
+    const name = part.slice(0, separator).trim();
+    const value = part.slice(separator + 1).trim();
+    if (name) cookies.set(name, value);
+  }
+  return cookies;
+}
+
+function appendSetCookie(response, value) {
+  const current = response.getHeader("set-cookie");
+  if (current === undefined) response.setHeader("set-cookie", value);
+  else response.setHeader("set-cookie", Array.isArray(current) ? [...current, value] : [current, value]);
+}
+
+function publicCookie(request, name, value, { maxAge, httpOnly = true } = {}) {
+  const forwardedProto = String(requestHeader(request, "x-forwarded-proto") ?? "")
+    .split(",", 1)[0]
+    .trim()
+    .toLowerCase();
+  const secure = forwardedProto === "https" || request.socket?.encrypted === true;
+  return [
+    `${name}=${value}`,
+    "Path=/",
+    `Max-Age=${maxAge}`,
+    "SameSite=Lax",
+    httpOnly ? "HttpOnly" : null,
+    secure ? "Secure" : null,
+  ].filter(Boolean).join("; ");
+}
+
+function publicSessionSecret({ sharedSecret, users }) {
+  const hash = createHash("sha256").update("codex-taskboard-public-session-v1\0");
+  hash.update(sharedSecret);
+  for (const user of [...users].sort((left, right) => left.login.localeCompare(right.login))) {
+    hash.update("\0").update(user.login).update("\0").update(user.passwordDigest);
+  }
+  return hash.digest();
+}
+
+function createPublicSessionToken(identity, authConfig, now = Date.now()) {
+  const payload = Buffer.from(JSON.stringify({ login: identity.login, exp: now + PUBLIC_SESSION_TTL_MS }))
+    .toString("base64url");
+  const signature = createHmac("sha256", publicSessionSecret(authConfig))
+    .update(payload)
+    .digest("base64url");
+  return `${payload}.${signature}`;
+}
+
+function identityForPublicLogin(login, users) {
+  const normalizedLogin = login.trim().toLocaleLowerCase("en-US");
+  const configuredUser = users.length > 0
+    ? users.find((candidate) => candidate.login === normalizedLogin)
+    : null;
+  if (users.length > 0 && !configuredUser) return null;
+  const name = stringField(configuredUser?.name ?? login, "Public username", {
+    required: true,
+    maxLength: 120,
+  });
+  return {
+    login: normalizedLogin,
+    actor: {
+      type: "user",
+      id: `basic:${encodeURIComponent(normalizedLogin)}`,
+      name,
+      avatarUrl: null,
+    },
+    role: configuredUser?.role ?? "product",
+  };
+}
+
+function readPublicSession(request, authConfig) {
+  const token = parseCookies(request).get(PUBLIC_SESSION_COOKIE);
+  if (!token) return null;
+  const separator = token.lastIndexOf(".");
+  if (separator < 1) return null;
+  const payload = token.slice(0, separator);
+  const provided = Buffer.from(token.slice(separator + 1), "base64url");
+  const expected = createHmac("sha256", publicSessionSecret(authConfig)).update(payload).digest();
+  if (provided.length !== expected.length || !timingSafeEqual(provided, expected)) return null;
+  let parsed;
+  try {
+    parsed = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed.login !== "string" || !Number.isFinite(parsed.exp) || parsed.exp <= Date.now()) {
+    return null;
+  }
+  return identityForPublicLogin(parsed.login, authConfig.users);
+}
+
+function validatePublicCredentials(credentials, { sharedSecret, users }) {
+  if (!credentials) return null;
+  const normalizedLogin = credentials.username.trim().toLocaleLowerCase("en-US");
+  const configuredUser = users.length > 0
+    ? users.find((candidate) => candidate.login === normalizedLogin)
+    : null;
+  const expected = configuredUser?.passwordDigest
+    ?? (users.length === 0 && sharedSecret ? publicPasswordDigest(sharedSecret) : null);
+  const provided = publicPasswordDigest(credentials.password);
+  if (!expected || !timingSafeEqual(provided, expected)) return null;
+  return identityForPublicLogin(credentials.username, users);
+}
+
 function parsePublicUsers(value) {
   const source = String(value ?? "").trim();
   if (!source) return [];
@@ -695,32 +817,63 @@ function parsePublicUsers(value) {
 
 function authenticatePublicRequest(request, { sharedSecret, users }) {
   const credentials = decodeBasicCredentials(requestHeader(request, "authorization"));
-  if (!credentials) {
+  const identity = validatePublicCredentials(credentials, { sharedSecret, users });
+  if (!identity) {
     throw new ApiError(401, "UNAUTHORIZED", "Valid Basic credentials are required");
   }
-  const normalizedLogin = credentials.username.trim().toLocaleLowerCase("en-US");
-  const configuredUser = users.length > 0
-    ? users.find((candidate) => candidate.login === normalizedLogin)
-    : null;
-  const expected = configuredUser?.passwordDigest
-    ?? (users.length === 0 && sharedSecret ? publicPasswordDigest(sharedSecret) : null);
-  const provided = publicPasswordDigest(credentials.password);
-  if (!expected || !timingSafeEqual(provided, expected)) {
-    throw new ApiError(401, "UNAUTHORIZED", "Valid Basic credentials are required");
-  }
-  const name = stringField(configuredUser?.name ?? credentials.username, "Basic username", {
-    required: true,
-    maxLength: 120,
-  });
-  return {
-    actor: {
-      type: request.headers["x-taskboard-client"] === "taskctl" ? "agent" : "user",
-      id: `basic:${encodeURIComponent(normalizedLogin)}`,
-      name,
-      avatarUrl: null,
-    },
-    role: configuredUser?.role ?? "product",
-  };
+  if (request.headers["x-taskboard-client"] === "taskctl") identity.actor.type = "agent";
+  return identity;
+}
+
+function escapeHtml(value) {
+  return String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+function publicLoginPage({ username = "", invalid = false } = {}) {
+  const error = invalid
+    ? '<p class="error" role="alert">用户名或密码不正确，请重新输入。</p>'
+    : "";
+  return `<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SkillHub 登录</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; color: #202124; background: #f7f8fa; font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    header { height: 68px; display: flex; align-items: center; padding: 0 30px; border-bottom: 1px solid #e5e7eb; background: #fff; font-size: 18px; font-weight: 650; }
+    main { min-height: calc(100vh - 68px); display: grid; place-items: center; padding: 32px 20px; }
+    form { width: min(100%, 360px); }
+    h1 { margin: 0 0 8px; font-size: 24px; font-weight: 650; }
+    .hint { margin: 0 0 28px; color: #6b7280; }
+    label { display: block; margin: 0 0 16px; color: #4b5563; font-weight: 600; }
+    input { width: 100%; height: 44px; margin-top: 7px; padding: 0 12px; border: 1px solid #cfd4dc; border-radius: 6px; background: #fff; color: #202124; font: inherit; outline: none; }
+    input:focus { border-color: #2563eb; box-shadow: 0 0 0 3px rgba(37, 99, 235, .12); }
+    button { width: 100%; height: 44px; margin-top: 4px; border: 0; border-radius: 6px; background: #202124; color: #fff; font: inherit; font-weight: 650; cursor: pointer; }
+    button:hover { background: #111827; }
+    .error { margin: -4px 0 16px; color: #c2413a; }
+  </style>
+</head>
+<body>
+  <header>SkillHub</header>
+  <main>
+    <form method="post" autocomplete="on">
+      <h1>登录 Taskboard</h1>
+      <p class="hint">使用分配给你的协作账户继续。</p>
+      ${error}
+      <label>用户名<input name="username" value="${escapeHtml(username)}" autocomplete="username" required autofocus></label>
+      <label>密码<input name="password" type="password" autocomplete="current-password" required></label>
+      <button type="submit">登录</button>
+    </form>
+  </main>
+</body>
+</html>`;
 }
 
 function publicProductRequestCanWrite(method, pathname) {
@@ -728,6 +881,7 @@ function publicProductRequestCanWrite(method, pathname) {
   if (method === "POST" && pathname === "/api/product-sessions") return true;
   if (method === "POST" && /^\/api\/product-sessions\/[^/]+\/(?:turns|approve)$/.test(pathname)) return true;
   if (method === "POST" && /^\/api\/product-sessions\/[^/]+\/acceptance$/.test(pathname)) return true;
+  if (method === "PATCH" && /^\/api\/product-sessions\/[^/]+\/product-agent-settings$/.test(pathname)) return true;
   if (method === "PUT" && /^\/api\/product-sessions\/[^/]+\/document$/.test(pathname)) return true;
   return false;
 }
@@ -735,6 +889,7 @@ function publicProductRequestCanWrite(method, pathname) {
 function publicTechnicalRequestCanWrite(method, pathname) {
   if (method === "GET" || method === "HEAD") return true;
   if (method === "POST" && /^\/api\/product-sessions\/[^/]+\/(?:technical-turns|technical-approve|submit-review)$/.test(pathname)) return true;
+  if (method === "PATCH" && /^\/api\/product-sessions\/[^/]+\/technical-agent-settings$/.test(pathname)) return true;
   if (method === "PUT" && /^\/api\/product-sessions\/[^/]+\/technical-document$/.test(pathname)) return true;
   return pathname === "/api/tasks"
     || pathname.startsWith("/api/tasks/")
@@ -1232,11 +1387,27 @@ function parseAiTurn(body) {
 
 function parseProductSessionCreate(body) {
   assertPlainObject(body);
-  assertAllowedKeys(body, new Set(["projectId", "title"]));
+  assertAllowedKeys(body, new Set(["projectId", "title", "model", "reasoningEffort"]));
   return {
     projectId: validateProjectId(body.projectId),
     title: stringField(body.title, "title", { required: true, maxLength: 160 }),
+    model: parseAiSetting(body.model, "model", 128),
+    reasoningEffort: parseAiSetting(body.reasoningEffort, "reasoningEffort", 64),
   };
+}
+
+function parseProductAgentSettings(body) {
+  assertPlainObject(body);
+  assertAllowedKeys(body, new Set(["model", "reasoningEffort"]));
+  const input = {};
+  if (body.model !== undefined) input.model = parseAiSetting(body.model, "model", 128);
+  if (body.reasoningEffort !== undefined) {
+    input.reasoningEffort = parseAiSetting(body.reasoningEffort, "reasoningEffort", 64);
+  }
+  if (Object.keys(input).length === 0) {
+    throw new ApiError(400, "INVALID_BODY", "PATCH requires a model or reasoning effort");
+  }
+  return input;
 }
 
 function parseProductSessionList(searchParams) {
@@ -2606,6 +2777,14 @@ export function createTaskboardServer(options = {}) {
     return safeRun;
   }
 
+  function productAgentSettingsForResponse(thread) {
+    if (!thread) return null;
+    return {
+      model: thread.model,
+      reasoningEffort: thread.reasoningEffort,
+    };
+  }
+
   function productEventForResponse(event) {
     const { threadId: _threadId, runId: _runId, ...safeEvent } = event;
     return safeEvent;
@@ -2658,6 +2837,8 @@ export function createTaskboardServer(options = {}) {
     ));
     return {
       session: productSessionForResponse(session),
+      productAgent: productAgentSettingsForResponse(snapshot.thread),
+      technicalAgent: productAgentSettingsForResponse(technicalSnapshot.thread),
       runs: snapshot.runs.map(productRunForResponse),
       technicalRuns: technicalSnapshot.runs.map(productRunForResponse),
       technicalEvents: technicalSnapshot.events
@@ -2819,7 +3000,12 @@ export function createTaskboardServer(options = {}) {
     response.setHeader("referrer-policy", "no-referrer");
     try {
       const incomingUrl = new URL(request.url, "http://127.0.0.1");
-      if (resolved.instanceToken && incomingUrl.pathname !== "/health") {
+      const requestOrigin = request.headers.origin;
+      const requiresInstanceRoute = resolved.instanceToken
+        && (!resolved.publicAuthEnabled
+          || requestOrigin === "app://-"
+          || requestOrigin === "null");
+      if (requiresInstanceRoute && incomingUrl.pathname !== "/health") {
         if (incomingUrl.pathname === routePrefix) {
           response.writeHead(301, { location: `${incomingUrl.pathname}/${incomingUrl.search}` });
           response.end();
@@ -2835,11 +3021,92 @@ export function createTaskboardServer(options = {}) {
       }
 
       const requestPathname = new URL(request.url, "http://127.0.0.1").pathname;
-      if (resolved.publicAuthEnabled && requestPathname !== "/health") {
-        const identity = authenticatePublicRequest(request, {
-          sharedSecret: resolved.publicSharedSecret,
-          users: resolved.publicUsers,
-        });
+      const launcherRequest = resolved.instanceToken
+        && (requestOrigin === "app://-" || requestOrigin === "null")
+        && incomingUrl.pathname.startsWith(`${routePrefix}/`);
+      const publicAuthConfig = {
+        sharedSecret: resolved.publicSharedSecret,
+        users: resolved.publicUsers,
+      };
+      if (resolved.publicAuthEnabled && launcherRequest) {
+        request.taskboardPublicRole = "admin";
+      }
+      if (resolved.publicAuthEnabled && requestPathname === "/login") {
+        if (request.method === "GET" || request.method === "HEAD") {
+          const body = publicLoginPage();
+          if (request.method === "HEAD") {
+            response.writeHead(200, {
+              "cache-control": "no-store",
+              "content-length": Buffer.byteLength(body),
+              "content-type": "text/html; charset=utf-8",
+            });
+            return response.end();
+          }
+          return sendHtml(response, 200, body);
+        }
+        if (request.method === "POST") {
+          const contentType = request.headers["content-type"]?.split(";", 1)[0].trim().toLowerCase();
+          if (contentType !== "application/x-www-form-urlencoded") {
+            return sendHtml(response, 415, publicLoginPage());
+          }
+          const body = await readBody(request, 16 * 1024, "Login request is too large");
+          const form = new URLSearchParams(body.toString("utf8"));
+          const username = form.get("username") ?? "";
+          const identity = validatePublicCredentials({
+            username,
+            password: form.get("password") ?? "",
+          }, publicAuthConfig);
+          if (!identity) return sendHtml(response, 401, publicLoginPage({ username, invalid: true }));
+          appendSetCookie(response, publicCookie(
+            request,
+            PUBLIC_SESSION_COOKIE,
+            createPublicSessionToken(identity, publicAuthConfig),
+            { maxAge: Math.floor(PUBLIC_SESSION_TTL_MS / 1000) },
+          ));
+          appendSetCookie(response, publicCookie(request, PUBLIC_LOGGED_OUT_COOKIE, "", {
+            maxAge: 0,
+            httpOnly: false,
+          }));
+          return sendEmpty(response, 303, { location: "./" });
+        }
+        return methodNotAllowed(response, ["GET", "HEAD", "POST"]);
+      }
+      if (resolved.publicAuthEnabled && requestPathname === "/logout") {
+        if (request.method !== "POST") return methodNotAllowed(response, ["POST"]);
+        appendSetCookie(response, publicCookie(request, PUBLIC_SESSION_COOKIE, "", { maxAge: 0 }));
+        appendSetCookie(response, publicCookie(request, PUBLIC_LOGGED_OUT_COOKIE, "1", {
+          maxAge: Math.floor(PUBLIC_SESSION_TTL_MS / 1000),
+          httpOnly: false,
+        }));
+        return sendEmpty(response, 204);
+      }
+      if (resolved.publicAuthEnabled && !launcherRequest && requestPathname !== "/health") {
+        const cookies = parseCookies(request);
+        let identity = readPublicSession(request, publicAuthConfig);
+        if (!identity && cookies.get(PUBLIC_LOGGED_OUT_COOKIE) === "1") {
+          const acceptsHtml = String(requestHeader(request, "accept") ?? "").includes("text/html");
+          if ((request.method === "GET" || request.method === "HEAD") && acceptsHtml) {
+            return sendEmpty(response, 303, { location: "login" });
+          }
+          return sendJson(response, 401, {
+            error: { code: "SIGNED_OUT", message: "Sign in to continue" },
+          });
+        }
+        if (!identity) {
+          const acceptsHtml = String(requestHeader(request, "accept") ?? "").includes("text/html");
+          if ((request.method === "GET" || request.method === "HEAD") && acceptsHtml) {
+            return sendEmpty(response, 303, { location: "login" });
+          }
+          identity = authenticatePublicRequest(request, publicAuthConfig);
+          if (request.headers["x-taskboard-client"] !== "taskctl") {
+            appendSetCookie(response, publicCookie(
+              request,
+              PUBLIC_SESSION_COOKIE,
+              createPublicSessionToken(identity, publicAuthConfig),
+              { maxAge: Math.floor(PUBLIC_SESSION_TTL_MS / 1000) },
+            ));
+          }
+        }
         request.taskboardActor = identity.actor;
         request.taskboardPublicRole = identity.role;
       }
@@ -2849,7 +3116,7 @@ export function createTaskboardServer(options = {}) {
         Boolean(resolved.instanceToken),
         resolved.trustedOrigins,
       );
-      const origin = request.headers.origin;
+      const origin = requestOrigin;
       const trustedEmbedOrigin = TRUSTED_EMBED_ORIGINS.has(origin)
         || (Boolean(resolved.instanceToken) && origin === "null");
       if (trustedEmbedOrigin) {
@@ -3232,6 +3499,18 @@ export function createTaskboardServer(options = {}) {
         }
       }
 
+      if (pathname === "/api/product-collaboration/catalog") {
+        if (request.method !== "GET") return methodNotAllowed(response, ["GET"]);
+        assertAllowedQuery(
+          url.searchParams,
+          new Set(["projectId"]),
+          "GET /api/product-collaboration/catalog",
+        );
+        const projectId = validateProjectId(url.searchParams.get("projectId") ?? undefined);
+        const catalog = await aiChat.getCatalog(projectId);
+        return sendJson(response, 200, { models: catalog.models });
+      }
+
       if (pathname === "/api/product-sessions") {
         if (request.method === "GET") {
           const query = parseProductSessionList(url.searchParams);
@@ -3249,6 +3528,8 @@ export function createTaskboardServer(options = {}) {
           const thread = await aiChat.createThread({
             projectId: input.projectId,
             title: input.title,
+            model: input.model,
+            reasoningEffort: input.reasoningEffort,
             sandbox: "read-only",
           });
           try {
@@ -3299,6 +3580,24 @@ export function createTaskboardServer(options = {}) {
           aiEventResponses.delete(response);
         });
         return;
+      }
+
+      const productAgentSettingsRoute = pathname.match(
+        /^\/api\/product-sessions\/([^/]+)\/(product-agent-settings|technical-agent-settings)$/,
+      );
+      if (productAgentSettingsRoute) {
+        if (request.method !== "PATCH") return methodNotAllowed(response, ["PATCH"]);
+        assertNoQuery(url.searchParams, "PATCH /api/product-sessions/:id/:agent-settings");
+        const sessionId = decodeRouteSegment(productAgentSettingsRoute[1], "Product session id");
+        const input = parseProductAgentSettings(await readJson(request));
+        let session = requireProductSession(sessionId);
+        const technical = productAgentSettingsRoute[2] === "technical-agent-settings";
+        if (technical) session = await ensureTechnicalThread(session);
+        const threadId = technical ? session.technicalAiThreadId : session.aiThreadId;
+        const thread = await aiChat.updateThread(threadId, input);
+        return sendJson(response, 200, {
+          settings: productAgentSettingsForResponse(thread),
+        });
       }
 
       const productSessionTurnsRoute = pathname.match(/^\/api\/product-sessions\/([^/]+)\/turns$/);

@@ -23,6 +23,7 @@ interface ArchivedTaskCardProps {
   task: Task;
   busy: boolean;
   restoring: boolean;
+  canWrite?: boolean;
   onRestore: (task: Task) => void;
   onDelete: (task: Task) => void;
 }
@@ -31,6 +32,7 @@ function ArchivedTaskCard({
   task,
   busy,
   restoring,
+  canWrite = true,
   onRestore,
   onDelete,
 }: ArchivedTaskCardProps) {
@@ -48,7 +50,7 @@ function ArchivedTaskCard({
           <StatusIcon status={task.status} size={14} />
           {taskStatusLabel(language, task.status)}
         </span>
-        {task.source !== "jira" && (
+        {canWrite && task.source !== "jira" && (
           <>
             <button
               className="archived-task-action archived-task-restore"
@@ -81,6 +83,7 @@ interface ArchivedTasksColumnProps {
   hasActiveFilters: boolean;
   restoringTaskId: string | null;
   deletingTaskId: string | null;
+  canWrite?: boolean;
   onRestore: (task: Task) => void;
   onDelete: (task: Task) => void;
 }
@@ -90,6 +93,7 @@ export function ArchivedTasksColumn({
   hasActiveFilters,
   restoringTaskId,
   deletingTaskId,
+  canWrite = true,
   onRestore,
   onDelete,
 }: ArchivedTasksColumnProps) {
@@ -113,6 +117,7 @@ export function ArchivedTasksColumn({
             task={task}
             busy={restoringTaskId !== null || deletingTaskId !== null}
             restoring={restoringTaskId === task.id}
+            canWrite={canWrite}
             onRestore={onRestore}
             onDelete={onDelete}
           />
@@ -149,6 +154,7 @@ interface OtherTasksPanelProps {
   currentUser: ActorIdentity;
   showCover: boolean;
   showBody: boolean;
+  canWrite?: boolean;
   onCreateLabel: (label: string, projectId?: string) => Promise<void>;
   restoringTaskId: string | null;
   deletingTaskId: string | null;
@@ -186,6 +192,7 @@ export function OtherTasksPanel({
   currentUser,
   showCover,
   showBody,
+  canWrite = true,
   onCreateLabel,
   restoringTaskId,
   deletingTaskId,
@@ -308,22 +315,22 @@ export function OtherTasksPanel({
         id="other-tasks-list"
         role="tabpanel"
         aria-labelledby={`other-tasks-tab-${activeTab}`}
-        onDragEnter={() => {
+      onDragEnter={canWrite ? () => {
           if (!archived) onDragEnter(activeTab);
-        }}
-        onDragOver={(event) => {
+        } : undefined}
+        onDragOver={canWrite ? (event) => {
           if (archived) return;
           event.preventDefault();
           event.dataTransfer.dropEffect = "move";
           onDragEnter(activeTab);
           setDropBeforeTaskId(findDropBefore(event.currentTarget, event.clientY));
-        }}
-        onDragLeave={(event) => {
+        } : undefined}
+        onDragLeave={canWrite ? (event) => {
           if (!(event.relatedTarget instanceof Node) || !event.currentTarget.contains(event.relatedTarget)) {
             setDropBeforeTaskId(undefined);
           }
-        }}
-        onDrop={handleDrop}
+        } : undefined}
+        onDrop={canWrite ? handleDrop : undefined}
       >
         {archived ? archivedTasks.map((task) => (
           <ArchivedTaskCard
@@ -331,6 +338,7 @@ export function OtherTasksPanel({
             task={task}
             busy={restoringTaskId !== null || deletingTaskId !== null}
             restoring={restoringTaskId === task.id}
+            canWrite={canWrite}
             onRestore={onRestore}
             onDelete={onDelete}
           />
@@ -353,6 +361,7 @@ export function OtherTasksPanel({
               currentUser={currentUser}
               showCover={showCover}
               showBody={showBody}
+              canWrite={canWrite}
               onCreateLabel={(label) => onCreateLabel(label, task.projectId)}
               onEdit={onEdit}
               onUpdate={onUpdate}

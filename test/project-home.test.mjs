@@ -99,6 +99,17 @@ test("the project header exposes project, automation, and create controls", () =
   assert.match(styles, /\.header-project-menu \{[\s\S]*?-webkit-app-region: no-drag/);
 });
 
+test("public roles can reach read-only board views and switch accounts", () => {
+  assert.match(appSource, /<button[\s\S]*?selectBoardView\("dashboard"\)/);
+  assert.match(appSource, /selectBoardView\("issues"\)/);
+  assert.match(appSource, /selectBoardView\("list"\)/);
+  assert.match(appSource, /selectBoardView\("gantt"\)/);
+  assert.match(appSource, /publicAccessMode && \([\s\S]*?className="header-account"/);
+  assert.match(appSource, /logoutPublicSession\(\)/);
+  assert.match(appSource, /window\.location\.replace\(resolveTaskboardUrl\("\/login"\)\)/);
+  assert.match(styles, /\.header-account-menu \{/);
+});
+
 test("the project header keeps detail navigation separate from the project switcher", () => {
   assert.match(appSource, /const headerProjectName = isAllProjects\s*\? text\("所有项目", "All projects"\)\s*: selectedProject\?\.id === GLOBAL_PROJECT_ID\s*\? text\("临时任务", "Temporary tasks"\)\s*: selectedProject\?\.name \?\? text\("任务面板", "Taskboard"\)/);
   assert.match(appSource, /detailTask && \([\s\S]*?aria-label=\{text\("返回议题看板", "Back to issue board"\)\}[\s\S]*?<\/button>/);

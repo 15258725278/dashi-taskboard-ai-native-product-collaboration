@@ -37,6 +37,7 @@ import {
   moveTask as moveTaskRequest,
   publishHostRuntime,
   removeTaskRelation,
+  logoutPublicSession,
   resolveTaskboardUrl,
   resolveTaskboardWebSocketUrl,
   restoreTask as restoreTaskRequest,
@@ -716,7 +717,7 @@ export function App() {
   const [theme, setTheme] = useState<Theme>(getInitialTheme);
   const [hostContext, setHostContext] = useState<HostContext | null>(null);
   const language = resolveTaskboardLanguage(
-    hostContext?.language ?? query.get("lang") ?? navigator.language,
+    query.get("lang") ?? hostContext?.language ?? navigator.language,
   );
   const { locale, text } = getTaskboardI18n(language);
   const [embeddedFrameChallenge, setEmbeddedFrameChallengeState] = useState("");
@@ -810,6 +811,8 @@ export function App() {
   const [projectMenuOpen, setProjectMenuOpen] = useState(
     () => taskboardStorage.getItem(FIRST_USE_COMPLETE_KEY) === null,
   );
+  const [accountMenuOpen, setAccountMenuOpen] = useState(false);
+  const [loggingOut, setLoggingOut] = useState(false);
   const [projectMenuSearch, setProjectMenuSearch] = useState("");
   const [projectContextMenu, setProjectContextMenu] = useState<ProjectContextMenuState | null>(null);
   const [projectCreateOpen, setProjectCreateOpen] = useState(false);
@@ -1730,6 +1733,23 @@ export function App() {
   }, [projectMenuOpen]);
 
   useEffect(() => {
+    if (!accountMenuOpen) return;
+    function closeAccountMenu(event: PointerEvent) {
+      const target = event.target as HTMLElement;
+      if (!target.closest("[data-account-menu]")) setAccountMenuOpen(false);
+    }
+    function closeAccountMenuWithEscape(event: KeyboardEvent) {
+      if (event.key === "Escape") setAccountMenuOpen(false);
+    }
+    document.addEventListener("pointerdown", closeAccountMenu);
+    window.addEventListener("keydown", closeAccountMenuWithEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeAccountMenu);
+      window.removeEventListener("keydown", closeAccountMenuWithEscape);
+    };
+  }, [accountMenuOpen]);
+
+  useEffect(() => {
     if (!projectContextMenu) return;
     function closeProjectContextMenu(event: PointerEvent) {
       const target = event.target as HTMLElement;
@@ -2389,6 +2409,18 @@ export function App() {
     setBoardView(view);
     if (selectedProjectId) {
       taskboardStorage.setItem(`${PROJECT_VIEW_KEY_PREFIX}${selectedProjectId}`, view);
+    }
+  }
+
+  async function logoutAndSwitchAccount() {
+    if (loggingOut) return;
+    setLoggingOut(true);
+    try {
+      await logoutPublicSession();
+      window.location.replace(resolveTaskboardUrl("/login"));
+    } catch (error) {
+      setLoggingOut(false);
+      setActionError(error instanceof Error ? error.message : String(error));
     }
   }
 
@@ -3131,8 +3163,15 @@ export function App() {
         ));
         return;
       }
+      if (!codexProjectContext || !workspacePath) {
+        setActionError(text(
+          "当前页面没有该项目的本机 Codex 映射。请在 Codex App 中打开 Taskboard，并先映射到正确的项目目录。",
+          "This page has no local Codex mapping for the project. Open Taskboard in the Codex app and map it to the correct project directory first.",
+        ));
+        return;
+      }
       const deepLink = new URL("codex://threads/new");
-      if (workspacePath) deepLink.searchParams.set("path", workspacePath);
+      deepLink.searchParams.set("path", workspacePath);
       deepLink.searchParams.set("prompt", embeddedInstruction);
       window.location.assign(deepLink.toString());
       return;
@@ -3573,21 +3612,63 @@ export function App() {
                 <PlusIcon color="currentColor" size={14} />
               </button>
             )}
+            {publicAccessMode && (
+              <div className="header-account" data-account-menu>
+                <button
+                  className="header-account-button"
+                  type="button"
+                  aria-label={text("账户菜单", "Account menu")}
+                  aria-haspopup="menu"
+                  aria-expanded={accountMenuOpen}
+                  title={currentUser.name}
+                  onClick={() => setAccountMenuOpen((current) => !current)}
+                >
+                  <span aria-hidden="true">{currentUser.name.trim().slice(0, 1).toLocaleUpperCase()}</span>
+                </button>
+                {accountMenuOpen && (
+                  <div className="header-account-menu" role="menu" aria-label={text("账户", "Account")}>
+                    <div className="header-account-identity">
+                      <span className="header-account-avatar" aria-hidden="true">
+                        {currentUser.name.trim().slice(0, 1).toLocaleUpperCase()}
+                      </span>
+                      <div>
+                        <strong>{currentUser.name}</strong>
+                        <span>{taskboardMetadata?.capabilities?.publicRole === "product"
+                          ? text("产品角色 · 任务只读", "Product · Issues read-only")
+                          : taskboardMetadata?.capabilities?.publicRole === "technical"
+                            ? text("技术角色", "Technical")
+                            : text("管理员", "Administrator")}</span>
+                      </div>
+                    </div>
+                    <div className="project-menu-divider" role="separator" />
+                    <button
+                      type="button"
+                      role="menuitem"
+                      disabled={loggingOut}
+                      onClick={() => void logoutAndSwitchAccount()}
+                    >
+                      <LinearIcon name="signOut" />
+                      <span>{loggingOut
+                        ? text("正在退出…", "Signing out…")
+                        : text("退出并切换账户", "Sign out and switch account")}</span>
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         </header>
 
         {selectedProjectId && !detailTask && <div className="board-toolbar">
           <div className="view-tabs" aria-label={text("看板视图", "Board views")}>
-            {!publicProductMode && (
-              <button
-                className={`view-tab${boardView === "dashboard" ? " active" : ""}`}
-                type="button"
-                aria-pressed={boardView === "dashboard"}
-                onClick={() => selectBoardView("dashboard")}
-              >
-                {text("仪表盘", "Dashboard")}
-              </button>
-            )}
+            <button
+              className={`view-tab${boardView === "dashboard" ? " active" : ""}`}
+              type="button"
+              aria-pressed={boardView === "dashboard"}
+              onClick={() => selectBoardView("dashboard")}
+            >
+              {text("仪表盘", "Dashboard")}
+            </button>
             {!isAllProjects && !isJiraProject && productCollaborationAvailable && (
               <button
                 className={`view-tab${boardView === "product" ? " active" : ""}`}
@@ -3598,8 +3679,7 @@ export function App() {
                 {text("产品协作", "Product collaboration")}
               </button>
             )}
-            {!publicProductMode && (
-              <>
+            <>
                 <button
                   className={`view-tab${boardView === "issues" ? " active" : ""}`}
                   type="button"
@@ -3634,8 +3714,7 @@ export function App() {
                     {text("项目文档", "Project Docs")}
                   </button>
                 )}
-              </>
-            )}
+            </>
           </div>
           {(boardView === "issues" || boardView === "list" || boardView === "gantt") && <div className="toolbar-tools">
             <div className={`search-field${search ? " has-value" : ""}`} title={text("搜索议题 (/)", "Search issues (/)")}>
@@ -3864,6 +3943,7 @@ export function App() {
             presentations={taskPresentations}
             currentUser={currentUser}
             hasActiveFilters={hasActiveTaskFilters}
+            canWrite={taskWrite}
             onOpenTask={openTaskDetail}
             onOpenConversation={openTaskConversation}
             onUpdate={updateTaskProperties}
@@ -3877,6 +3957,7 @@ export function App() {
               zoom={ganttZoom}
               hideCompleted={ganttHideCompleted}
               todayRequest={ganttTodayRequest}
+              canWrite={taskWrite}
               onOpenTask={openTaskDetail}
               onUpdate={updateTaskProperties}
             />
@@ -3911,6 +3992,7 @@ export function App() {
                         hasActiveFilters={hasActiveTaskFilters}
                         restoringTaskId={restoringTaskId}
                         deletingTaskId={deletingArchivedTaskId}
+                        canWrite={taskWrite}
                         onRestore={(task) => void restoreArchivedTask(task)}
                         onDelete={setPendingArchivedTaskDelete}
                       />
@@ -3938,7 +4020,8 @@ export function App() {
                         currentUser={currentUser}
                         showCover={boardDisplaySettings.cover}
                         showBody={boardDisplaySettings.body}
-                        createEnabled={!isJiraProject}
+                        canWrite={taskWrite}
+                        createEnabled={!isJiraProject && taskWrite}
                         onCreateLabel={persistProjectLabel}
                         onCreate={(initialStatus) => setEditor({ task: null, status: initialStatus })}
                         onEdit={openTaskDetail}
@@ -3975,11 +4058,12 @@ export function App() {
                     currentUser={currentUser}
                     showCover={boardDisplaySettings.cover}
                     showBody={boardDisplaySettings.body}
+                    canWrite={taskWrite}
                     onCreateLabel={persistProjectLabel}
                     restoringTaskId={restoringTaskId}
                     deletingTaskId={deletingArchivedTaskId}
                     onTabChange={setOtherTasksTab}
-                    onCreate={isJiraProject
+                    onCreate={isJiraProject || !taskWrite
                       ? undefined
                       : (initialStatus) => setEditor({ task: null, status: initialStatus })}
                     onRestore={(task) => void restoreArchivedTask(task)}

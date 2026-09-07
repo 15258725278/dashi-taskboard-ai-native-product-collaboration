@@ -934,6 +934,114 @@ kbd {
   gap: 5px;
 }
 
+.header-account {
+  position: relative;
+}
+
+.header-account-button,
+.header-account-avatar {
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--text-primary);
+  color: var(--surface);
+  font-size: 10px;
+  font-weight: 650;
+}
+
+.header-account-button {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: var(--border-hairline) solid var(--border-strong);
+}
+
+.header-account-button:hover,
+.header-account-button[aria-expanded="true"] {
+  box-shadow: 0 0 0 2px var(--surface), 0 0 0 3px var(--border-strong);
+}
+
+.header-account-menu {
+  position: absolute;
+  z-index: 60;
+  top: 34px;
+  right: 0;
+  width: min(236px, calc(100vw - 24px));
+  padding: 6px;
+  border: var(--border-hairline) solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--surface-raised);
+  box-shadow: var(--dialog-shadow);
+  animation: context-menu-in 90ms ease-out both;
+}
+
+.header-account-identity {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr);
+  align-items: center;
+  gap: 9px;
+  padding: 7px;
+}
+
+.header-account-avatar {
+  width: 32px;
+  height: 32px;
+  font-size: 12px;
+}
+
+.header-account-identity > div {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.header-account-identity strong,
+.header-account-identity span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.header-account-identity strong {
+  color: var(--text-primary);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.header-account-identity span {
+  color: var(--text-tertiary);
+  font-size: 9px;
+}
+
+.header-account-menu > button {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr);
+  align-items: center;
+  width: 100%;
+  min-height: 32px;
+  gap: 7px;
+  padding: 4px 7px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 11px;
+  text-align: left;
+}
+
+.header-account-menu > button:hover:not(:disabled),
+.header-account-menu > button:focus-visible {
+  background: var(--surface-hover);
+  outline: none;
+}
+
+.header-account-menu > button svg {
+  width: 15px;
+  height: 15px;
+  color: var(--text-tertiary);
+}
+
 .compact-select select {
   height: 26px;
   max-width: 150px;

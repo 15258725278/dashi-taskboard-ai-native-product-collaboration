@@ -101,10 +101,21 @@ export interface ProductSession {
 
 export interface ProductSessionSnapshot {
   session: ProductSession;
+  productAgent: ProductAgentSettings;
+  technicalAgent: ProductAgentSettings | null;
   events: ProductAiEvent[];
   runs: ProductAiRun[];
   technicalEvents: ProductAiEvent[];
   technicalRuns: ProductAiRun[];
+}
+
+export interface ProductAgentSettings {
+  model: string;
+  reasoningEffort: string;
+}
+
+export interface ProductCollaborationCatalog {
+  models: AiChatModel[];
 }
 
 export type ProductAiEvent = Omit<AiChatEvent, "threadId" | "runId">;

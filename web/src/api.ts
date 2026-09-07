@@ -27,6 +27,8 @@ import type {
   ProjectSummary,
   ProductSession,
   ProductSessionSnapshot,
+  ProductAgentSettings,
+  ProductCollaborationCatalog,
   ProductAiRun,
   Task,
   TaskChangeActivity,
@@ -44,6 +46,7 @@ const DEFAULT_USER_ACTOR: ActorIdentity = {
 
 let currentUserActor = DEFAULT_USER_ACTOR;
 let apiText = (_chinese: string, english: string) => english;
+const API_ROUTE_REFRESH_KEY = "taskboard.api-route-refresh";
 
 export function setCurrentUserActor(actor?: ActorIdentity) {
   currentUserActor = actor?.type === "user" ? actor : DEFAULT_USER_ACTOR;
@@ -83,6 +86,35 @@ export function resolveTaskboardWebSocketUrl(path: string): string {
   const url = new URL(resolveTaskboardUrl(path));
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
   return url.href;
+}
+
+function reloadForApiRouteMismatch(response: Response, body: ApiErrorBody): boolean {
+  if (
+    response.status !== 404
+    || body.error?.code !== "NOT_FOUND"
+    || body.error?.message !== "API route not found"
+  ) return false;
+
+  const bundle = document.querySelector<HTMLScriptElement>('script[type="module"][src]')?.src
+    ?? document.baseURI;
+  if (sessionStorage.getItem(API_ROUTE_REFRESH_KEY) === bundle) return false;
+  sessionStorage.setItem(API_ROUTE_REFRESH_KEY, bundle);
+  window.location.reload();
+  return true;
+}
+
+export async function logoutPublicSession(): Promise<void> {
+  const response = await fetch(resolveTaskboardUrl("/logout"), {
+    method: "POST",
+    credentials: "include",
+  });
+  if (!response.ok) {
+    let body: ApiErrorBody = {};
+    try {
+      body = await response.json() as ApiErrorBody;
+    } catch {}
+    throw new ApiError(response.status, body);
+  }
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -146,7 +178,17 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     body = {} as T & ApiErrorBody;
   }
 
-  if (!response.ok) throw new ApiError(response.status, body);
+  if (!response.ok) {
+    if (reloadForApiRouteMismatch(response, body)) {
+      throw new ApiError(response.status, {
+        error: {
+          code: "API_VERSION_REFRESHING",
+          message: apiText("正在加载最新版本…", "Loading the latest version…"),
+        },
+      });
+    }
+    throw new ApiError(response.status, body);
+  }
   return body;
 }
 
@@ -477,12 +519,50 @@ export async function listProductSessions(
 export async function createProductSession(input: {
   projectId: string;
   title: string;
+  model?: string;
+  reasoningEffort?: string;
 }): Promise<ProductSession> {
   const data = await request<{ session: ProductSession }>("/api/product-sessions", {
     method: "POST",
     body: JSON.stringify(input),
   });
   return data.session;
+}
+
+export async function getProductCollaborationCatalog(
+  projectId: string,
+  signal?: AbortSignal,
+): Promise<ProductCollaborationCatalog> {
+  return request<ProductCollaborationCatalog>(
+    `/api/product-collaboration/catalog?projectId=${encodeURIComponent(projectId)}`,
+    { signal },
+  );
+}
+
+async function updateProductAgentSettings(
+  sessionId: string,
+  agent: "product" | "technical",
+  input: Partial<ProductAgentSettings>,
+): Promise<ProductAgentSettings> {
+  const data = await request<{ settings: ProductAgentSettings }>(
+    `/api/product-sessions/${encodeURIComponent(sessionId)}/${agent}-agent-settings`,
+    { method: "PATCH", body: JSON.stringify(input) },
+  );
+  return data.settings;
+}
+
+export function updateProductSessionAgentSettings(
+  sessionId: string,
+  input: Partial<ProductAgentSettings>,
+): Promise<ProductAgentSettings> {
+  return updateProductAgentSettings(sessionId, "product", input);
+}
+
+export function updateTechnicalSessionAgentSettings(
+  sessionId: string,
+  input: Partial<ProductAgentSettings>,
+): Promise<ProductAgentSettings> {
+  return updateProductAgentSettings(sessionId, "technical", input);
 }
 
 export async function getProductSession(
@@ -498,10 +578,11 @@ export async function getProductSession(
 export async function startProductSessionTurn(
   sessionId: string,
   message: string,
+  attachments: AiChatAttachmentInput[] = [],
 ): Promise<ProductAiRun> {
   const data = await request<{ run: ProductAiRun }>(
     `/api/product-sessions/${encodeURIComponent(sessionId)}/turns`,
-    { method: "POST", body: JSON.stringify({ message }) },
+    { method: "POST", body: JSON.stringify({ message, attachments }) },
   );
   return data.run;
 }
@@ -521,10 +602,11 @@ export async function saveProductDocument(
 export async function startTechnicalSessionTurn(
   sessionId: string,
   message: string,
+  attachments: AiChatAttachmentInput[] = [],
 ): Promise<ProductAiRun> {
   const data = await request<{ run: ProductAiRun }>(
     `/api/product-sessions/${encodeURIComponent(sessionId)}/technical-turns`,
-    { method: "POST", body: JSON.stringify({ message }) },
+    { method: "POST", body: JSON.stringify({ message, attachments }) },
   );
   return data.run;
 }

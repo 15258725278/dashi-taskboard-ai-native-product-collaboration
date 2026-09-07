@@ -42,6 +42,7 @@ interface TaskCardProps {
   currentUser: ActorIdentity;
   showCover: boolean;
   showBody: boolean;
+  canWrite?: boolean;
   onCreateLabel: (label: string) => Promise<void>;
   onEdit: (task: Task) => void;
   onUpdate: (task: Task, changes: Partial<TaskDraft>) => Promise<Task>;
@@ -403,6 +404,7 @@ export function TaskCard({
   currentUser,
   showCover,
   showBody,
+  canWrite = true,
   onCreateLabel,
   onEdit,
   onUpdate,
@@ -455,22 +457,22 @@ export function TaskCard({
         viewTransitionName: task.status === "in_review" ? `review-task-${task.id}` : "none",
         ...(dragShift ? { transform: `translate3d(0, ${dragShift}px, 0)` } : {}),
       }}
-      draggable={!isMoving}
+      draggable={canWrite && !isMoving}
       aria-labelledby={`task-${task.id}-title`}
       data-task-id={task.id}
       data-drag-shift={dragShift || undefined}
-      onContextMenu={(event) => {
+      onContextMenu={canWrite ? (event) => {
         event.preventDefault();
         event.stopPropagation();
         onContextMenu(task, { x: event.clientX, y: event.clientY });
-      }}
-      onDragStart={(event) => {
+      } : undefined}
+      onDragStart={canWrite ? (event) => {
         event.dataTransfer.effectAllowed = "move";
         event.dataTransfer.setData("text/plain", task.id);
         event.dataTransfer.setData("application/x-taskboard-task", task.id);
         onDragStart(task, event.currentTarget.offsetHeight);
-      }}
-      onDragEnd={onDragEnd}
+      } : undefined}
+      onDragEnd={canWrite ? onDragEnd : undefined}
     >
       <button
         className="task-card-open"
@@ -484,7 +486,7 @@ export function TaskCard({
           <span className="task-identifier">ID: {displayIdentifier}</span>
         </span>
         {presentation.unread && <span className="task-unread-dot" aria-label={text("有未读更新", "Unread updates")} />}
-        {task.status === "in_review" && onComplete && (
+        {canWrite && task.status === "in_review" && onComplete && (
           <button
             className="task-card-complete"
             type="button"
@@ -511,7 +513,7 @@ export function TaskCard({
               task={task}
               participants={task.participants.length ? task.participants : [creator]}
               currentUser={currentUser}
-              disabled={propertyDisabled || task.source === "jira"}
+              disabled={!canWrite || propertyDisabled || task.source === "jira"}
               open={propertyMenu === "assignee"}
               onOpenChange={(open) => setPropertyMenu(open ? "assignee" : null)}
               onChange={(assigneeTarget) => updateProperty({ assigneeTarget }, "assignee")}
@@ -540,7 +542,7 @@ export function TaskCard({
           {!processingCard && task.priority !== "none" && (
             <PriorityControl
               task={task}
-              disabled={propertyDisabled}
+              disabled={!canWrite || propertyDisabled}
               open={propertyMenu === "priority"}
               onOpenChange={(open) => setPropertyMenu(open ? "priority" : null)}
               onChange={(priority) => updateProperty({ priority }, "priority")}
@@ -551,7 +553,7 @@ export function TaskCard({
               availableLabels={availableLabels}
               selectedLabels={task.labels}
               open={propertyMenu === "labels"}
-              disabled={propertyDisabled}
+              disabled={!canWrite || propertyDisabled}
               className="card-label-picker card-property-control"
               triggerClassName="card-label-trigger"
               triggerContent={<TaskLabels task={task} />}
@@ -563,7 +565,7 @@ export function TaskCard({
           {!processingCard && (
             <DueDateControl
               task={task}
-              disabled={propertyDisabled}
+              disabled={!canWrite || propertyDisabled}
               onChange={(dueDate) => updateProperty({
                 dueDate,
                 ...(dueDate ? {} : { recurrence: null }),
@@ -575,7 +577,7 @@ export function TaskCard({
               task={task}
               participants={task.participants}
               currentUser={currentUser}
-              disabled={propertyDisabled || task.source === "jira"}
+              disabled={!canWrite || propertyDisabled || task.source === "jira"}
               open={propertyMenu === "assignee"}
               onOpenChange={(open) => setPropertyMenu(open ? "assignee" : null)}
               onChange={(assigneeTarget) => updateProperty({ assigneeTarget }, "assignee")}
