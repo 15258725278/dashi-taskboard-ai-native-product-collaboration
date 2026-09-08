@@ -3001,10 +3001,12 @@ export function createTaskboardServer(options = {}) {
     try {
       const incomingUrl = new URL(request.url, "http://127.0.0.1");
       const requestOrigin = request.headers.origin;
+      const hasInstanceRoute = incomingUrl.pathname === routePrefix
+        || incomingUrl.pathname.startsWith(`${routePrefix}/`);
       const requiresInstanceRoute = resolved.instanceToken
         && (!resolved.publicAuthEnabled
           || requestOrigin === "app://-"
-          || requestOrigin === "null");
+          || (requestOrigin === "null" && hasInstanceRoute));
       if (requiresInstanceRoute && incomingUrl.pathname !== "/health") {
         if (incomingUrl.pathname === routePrefix) {
           response.writeHead(301, { location: `${incomingUrl.pathname}/${incomingUrl.search}` });
@@ -3023,7 +3025,7 @@ export function createTaskboardServer(options = {}) {
       const requestPathname = new URL(request.url, "http://127.0.0.1").pathname;
       const launcherRequest = resolved.instanceToken
         && (requestOrigin === "app://-" || requestOrigin === "null")
-        && incomingUrl.pathname.startsWith(`${routePrefix}/`);
+        && hasInstanceRoute;
       const publicAuthConfig = {
         sharedSecret: resolved.publicSharedSecret,
         users: resolved.publicUsers,
