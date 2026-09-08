@@ -146,7 +146,7 @@ Use this review classification:
 
 - Reviewer approval means ready for user inspection, not user acceptance.
 - When work meets the user confirmation gate, put the complete directly verified function into the Taskboard-launched Codex App and ask the user to confirm that the function and final visual style work before starting any required local review.
-- Do not merge work that meets the UI confirmation gate until the user confirms its style. After visual-only feedback is applied and directly verified, the change can proceed without repeating Pro review.
+- Do not merge work that meets the UI confirmation gate until the user confirms its style. After visual-only feedback is applied and directly verified, the change can proceed without repeating deep local review.
 - UI-surface work that does not meet the confirmation gate can proceed after the coordinator verifies the real path, visual impact, scope, and required review without a separate user UI pause.
 - After implementation and required review pass, move the issue to `in_review`.
 - Never move an issue to `done` unless the user explicitly accepts it or asks for completion.
