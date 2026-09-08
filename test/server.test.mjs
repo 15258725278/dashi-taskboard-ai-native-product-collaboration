@@ -750,6 +750,34 @@ test("public product and technical roles complete an isolated product-to-develop
     return {
       codexExecutable: await createProductCollaborationCodexFixture(directory),
       codexStatePath: path.join(directory, "codex-state.json"),
+      deliveryProjects: {
+        skillhub: {
+          mode: "local",
+          deployScript: "scripts/taskboard-local-acceptance-deploy.sh",
+          acceptanceUrl: "https://test.example.com",
+          deploymentRecordUrl: "https://board.example.com/?project=skillhub",
+        },
+      },
+      deliveryRunner: async ({ deliveryId, branch, workspacePath: deliveryWorkspace, taskIdentifier, onUpdate }) => {
+        assert.equal(branch, "codex/install-feedback");
+        assert.equal(deliveryWorkspace, workspacePath);
+        assert.equal(taskIdentifier, "SKI-1");
+        onUpdate({
+          status: "running",
+          pullRequestNumber: 42,
+          implementationPr: "https://github.com/example/skillhub/pull/42",
+          workflowRunId: 100,
+          workflowRunUrl: "https://github.com/example/skillhub/actions/runs/100",
+        });
+        return {
+          implementationPr: "https://github.com/example/skillhub/pull/42",
+          acceptanceUrl: "https://test.example.com",
+          workflowRun: "https://github.com/example/skillhub/actions/runs/100",
+          immutableTag: `manual-test-${deliveryId}`,
+          mergedSha: "abcdef0123456789",
+          prNumbers: [42],
+        };
+      },
       processEnv: {
         ...process.env,
         CODEX_TASKBOARD_PUBLIC_USERS: JSON.stringify({
@@ -1030,6 +1058,11 @@ test("public product and technical roles complete an isolated product-to-develop
       version: approved.body.task.version,
       status: "in_progress",
       assigneeTarget: "current-user",
+      developmentContext: {
+        type: "worktree",
+        path: workspacePath,
+        branch: "codex/install-feedback",
+      },
     },
   });
   assert.equal(technicalTakeover.response.status, 200);
@@ -1196,28 +1229,38 @@ test("public product and technical roles complete an isolated product-to-develop
   );
   assert.equal(forbiddenProductSubmission.response.status, 403);
 
-  const submitted = await request(
+  const forbiddenProductDelivery = await request(
     baseUrl,
-    `/api/product-sessions/${session.id}/submit-review`,
+    `/api/product-sessions/${session.id}/delivery`,
     {
       method: "POST",
-      headers: technicalHeaders,
-      body: {
-        note: "Implemented the scoped flow. Integration and browser checks pass.",
-        implementationPr: "https://github.com/example/skillhub/pull/42",
-        testDeployment: {
-          url: "https://test.example.com",
-          workflowRun: "https://github.com/example/skillhub/actions/runs/100",
-          immutableTag: "manual-test-42-abcdef0",
-          prNumbers: [42],
-        },
-      },
+      headers: productHeaders,
     },
   );
-  assert.equal(submitted.response.status, 200);
-  assert.equal(submitted.body.task.status, "in_review");
-  assert.equal(submitted.body.session.acceptanceStatus, "pending");
-  assert.equal(submitted.body.session.deliverySubmittedBy, "Tech Owner");
+  assert.equal(forbiddenProductDelivery.response.status, 403);
+
+  const deliveryStarted = await request(
+    baseUrl,
+    `/api/product-sessions/${session.id}/delivery`,
+    { method: "POST", headers: technicalHeaders },
+  );
+  assert.equal(deliveryStarted.response.status, 202);
+  assert.equal(deliveryStarted.body.deliveryRun.status, "queued");
+  const submitted = await waitFor(async () => {
+    const current = await request(baseUrl, `/api/product-sessions/${session.id}`, {
+      headers: technicalHeaders,
+    });
+    return current.body.deliveryRun?.status === "succeeded" ? current.body : null;
+  });
+  assert.equal(submitted.session.acceptanceStatus, "pending");
+  assert.equal(submitted.session.deliverySubmittedBy, "Tech Owner");
+  assert.equal(submitted.session.implementationPr, "https://github.com/example/skillhub/pull/42");
+  assert.equal(submitted.session.testDeploymentUrl, "https://test.example.com");
+  assert.equal(submitted.deliveryRun.workflowRunId, 100);
+  const deliveryTask = await request(baseUrl, `/api/tasks/${approved.body.task.id}`, {
+    headers: technicalHeaders,
+  });
+  assert.equal(deliveryTask.body.task.status, "in_review");
 
   const forbiddenTechnicalAcceptance = await request(
     baseUrl,
@@ -1255,29 +1298,35 @@ test("public product and technical roles complete an isolated product-to-develop
   assert.equal(returned.body.task.status, "in_progress");
   assert.equal(returned.body.session.acceptanceStatus, "changes_requested");
   assert.equal(returned.body.session.acceptanceBy, "Product Owner");
+  assert.equal(returned.body.session.deliverySubmittedAt, null);
+  assert.equal(returned.body.session.implementationPr, null);
+  assert.equal(returned.body.session.testDeploymentUrl, null);
 
-  const resubmitted = await request(
+  const automaticResubmission = await request(
     baseUrl,
-    `/api/product-sessions/${session.id}/submit-review`,
+    `/api/tasks/${approved.body.task.id}`,
     {
-      method: "POST",
+      method: "PATCH",
       headers: technicalHeaders,
       body: {
-        note: "Added failure-state coverage and reran the complete acceptance flow.",
-        implementationPr: "https://github.com/example/skillhub/pull/42",
-        testDeployment: {
-          url: "https://test.example.com",
-          workflowRun: "https://github.com/example/skillhub/actions/runs/101",
-          immutableTag: "manual-test-42-abcdef1",
-          prNumbers: [42],
-        },
+        version: returned.body.task.version,
+        status: "in_review",
       },
     },
   );
-  assert.equal(resubmitted.response.status, 200);
-  assert.equal(resubmitted.body.task.status, "in_review");
-  assert.equal(resubmitted.body.session.acceptanceStatus, "pending");
-  assert.equal(resubmitted.body.session.acceptanceNote, null);
+  assert.equal(automaticResubmission.response.status, 200);
+  assert.equal(automaticResubmission.body.task.status, "in_review");
+  const resubmitted = await waitFor(async () => {
+    const current = await request(baseUrl, `/api/product-sessions/${session.id}`, {
+      headers: technicalHeaders,
+    });
+    return current.body.deliveryRun?.status === "succeeded"
+      && current.body.deliveryRun.id !== submitted.deliveryRun.id
+      ? current.body
+      : null;
+  });
+  assert.equal(resubmitted.session.acceptanceStatus, "pending");
+  assert.equal(resubmitted.session.acceptanceNote, null);
 
   const blockedAcceptance = await request(
     baseUrl,

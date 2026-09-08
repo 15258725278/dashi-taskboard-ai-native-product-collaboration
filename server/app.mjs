@@ -29,6 +29,13 @@ import {
   isLocalCompanionRoute,
 } from "./cloud-proxy.mjs";
 import { ApiError, TaskboardDatabase } from "./database.mjs";
+import {
+  DELIVERY_PROJECTS_ENV,
+  deliveryBranchForTask,
+  deliveryWorkspaceForTask,
+  parseDeliveryProjects,
+  runLocalDelivery,
+} from "./delivery-automation.mjs";
 import { createJiraConfigStore } from "./jira-config.mjs";
 import { createJiraIntegration } from "./jira-integration.mjs";
 import { ProjectSummaryService } from "./project-summary.mjs";
@@ -888,7 +895,7 @@ function publicProductRequestCanWrite(method, pathname) {
 
 function publicTechnicalRequestCanWrite(method, pathname) {
   if (method === "GET" || method === "HEAD") return true;
-  if (method === "POST" && /^\/api\/product-sessions\/[^/]+\/(?:technical-turns|technical-approve|submit-review)$/.test(pathname)) return true;
+  if (method === "POST" && /^\/api\/product-sessions\/[^/]+\/(?:technical-turns|technical-approve|delivery|submit-review)$/.test(pathname)) return true;
   if (method === "PATCH" && /^\/api\/product-sessions\/[^/]+\/technical-agent-settings$/.test(pathname)) return true;
   if (method === "PUT" && /^\/api\/product-sessions\/[^/]+\/technical-document$/.test(pathname)) return true;
   return pathname === "/api/tasks"
@@ -2158,6 +2165,9 @@ export function resolveServerOptions(options = {}) {
   }
   const publicUsers = parsePublicUsers(options.publicUsers ?? environment[PUBLIC_USERS_ENV]);
   const publicAuthEnabled = Boolean(publicSharedSecret || publicUsers.length > 0);
+  const deliveryProjects = parseDeliveryProjects(
+    options.deliveryProjects ?? environment[DELIVERY_PROJECTS_ENV],
+  );
   return {
     dataDirectory,
     databasePath: options.databasePath ?? path.join(dataDirectory, "taskboard.sqlite"),
@@ -2179,6 +2189,7 @@ export function resolveServerOptions(options = {}) {
     publicSharedSecret,
     publicUsers,
     publicAuthEnabled,
+    deliveryProjects,
     trustedOrigins: parseTrustedOrigins(environment[TRUSTED_ORIGINS_ENV]),
     version: String(
       options.version ?? environment.CODEX_TASKBOARD_VERSION ?? "development",
@@ -2209,6 +2220,7 @@ export function createTaskboardServer(options = {}) {
   );
   const routePrefix = resolved.instanceToken ? `/${resolved.instanceToken}` : "";
   const database = new TaskboardDatabase(resolved.databasePath);
+  database.failActiveDeliveryRuns();
   const events = new EventHub();
   let clientStorageWrite = Promise.resolve();
 
@@ -2748,6 +2760,172 @@ export function createTaskboardServer(options = {}) {
     return { workspacePath, relativePath };
   }
 
+  const deliveryExecutions = new Map();
+  const deliveryRunner = options.deliveryRunner ?? runLocalDelivery;
+
+  function deliveryConfigForSession(session) {
+    const config = resolved.deliveryProjects.get(session.projectId);
+    if (!config) {
+      throw new ApiError(
+        409,
+        "DELIVERY_AUTOMATION_NOT_CONFIGURED",
+        `Project '${session.projectId}' does not have an acceptance deployment configuration`,
+      );
+    }
+    return config;
+  }
+
+  async function executeDelivery(run, config, actor) {
+    try {
+      const result = await deliveryRunner({
+        deliveryId: run.id,
+        branch: run.branch,
+        workspacePath: run.workspacePath,
+        taskIdentifier: run.taskIdentifier,
+        config,
+        onUpdate: (changes) => database.updateDeliveryRun(run.id, changes),
+      });
+      database.updateDeliveryRun(run.id, {
+        status: "running",
+        acceptanceUrl: result.acceptanceUrl,
+        implementationPr: result.implementationPr,
+        pullRequestNumber: result.prNumbers[0] ?? null,
+        workflowRunUrl: result.workflowRun,
+        immutableTag: result.immutableTag,
+        mergedSha: result.mergedSha,
+        error: null,
+      });
+      let session = requireProductSession(run.productSessionId);
+      let task = database.getTask(run.taskId);
+      if (!task) throw new Error("The technical task no longer exists");
+      if (task.status === "done" || task.status === "canceled") {
+        throw new Error("The technical task was closed while deployment was running");
+      }
+      if (task.status !== "in_review") {
+        task = database.updateTask(
+          task.id,
+          task.version,
+          { status: "in_review" },
+          null,
+          null,
+          actor,
+        );
+      }
+      session = database.submitForProductAcceptance(session.id, {
+        note: `自动验收部署完成。${task.identifier} 已部署到共享验收环境。`,
+        implementationPr: result.implementationPr,
+        testDeployment: {
+          url: result.acceptanceUrl,
+          workflowRun: result.workflowRun,
+          immutableTag: result.immutableTag,
+          prNumbers: result.prNumbers,
+        },
+      }, actor);
+      await syncFeatureArtifacts(session);
+      database.updateDeliveryRun(run.id, {
+        status: "succeeded",
+        completedAt: new Date().toISOString(),
+      });
+      events.emit("task.updated", { task });
+      events.emit("product.delivery.updated", { projectId: session.projectId, deliveryRunId: run.id });
+    } catch (error) {
+      const message = (error instanceof Error ? error.message : String(error)).slice(0, 2_000);
+      database.updateDeliveryRun(run.id, {
+        status: "failed",
+        error: message,
+        completedAt: new Date().toISOString(),
+      });
+      const task = database.getTask(run.taskId);
+      const session = database.getProductSession(run.productSessionId);
+      if (task?.status === "in_review" && !session?.deliverySubmittedAt) {
+        const reverted = database.updateTask(
+          task.id,
+          task.version,
+          { status: "in_progress" },
+          null,
+          null,
+          actor,
+        );
+        events.emit("task.updated", { task: reverted });
+      }
+      events.emit("product.delivery.updated", {
+        projectId: session?.projectId,
+        deliveryRunId: run.id,
+      });
+    } finally {
+      deliveryExecutions.delete(run.id);
+    }
+  }
+
+  function startDelivery(sessionId, actor) {
+    const session = requireProductSession(sessionId);
+    if (session.technicalApprovedDocument === null) {
+      throw new ApiError(
+        409,
+        "TECHNICAL_DOCUMENT_NOT_APPROVED",
+        "Approve the technical document before deploying for product acceptance",
+      );
+    }
+    const task = database.getTask(session.technicalTaskId);
+    if (!task) {
+      throw new ApiError(409, "TECHNICAL_TASK_MISSING", "The technical task no longer exists");
+    }
+    if (task.status === "done" || task.status === "canceled") {
+      throw new ApiError(409, "DELIVERY_ALREADY_CLOSED", "Closed delivery tasks cannot be deployed");
+    }
+    const branch = deliveryBranchForTask(task);
+    if (!branch) {
+      throw new ApiError(
+        409,
+        "DELIVERY_BRANCH_REQUIRED",
+        "Bind the technical task to its development branch before deploying",
+      );
+    }
+    const workspacePath = deliveryWorkspaceForTask(task);
+    if (!workspacePath) {
+      throw new ApiError(
+        409,
+        "DELIVERY_WORKTREE_REQUIRED",
+        "Bind the technical task to its development worktree before deploying",
+      );
+    }
+    const config = deliveryConfigForSession(session);
+    const active = database.getLatestDeliveryRunForSession(session.id);
+    if (active && ["queued", "dispatching", "running"].includes(active.status)) return active;
+    const run = database.createDeliveryRun({
+      productSessionId: session.id,
+      taskId: task.id,
+      taskIdentifier: task.identifier,
+      workspacePath,
+      branch,
+      repository: "local",
+      workflow: config.deployScript,
+      workflowRef: "worktree",
+      baseRef: "local",
+      deployChannel: "local-acceptance",
+      acceptanceUrl: config.acceptanceUrl,
+      createdBy: actor.name,
+    });
+    const execution = executeDelivery(run, config, actor);
+    deliveryExecutions.set(run.id, execution);
+    return run;
+  }
+
+  function maybeStartDelivery(previousTask, task, actor) {
+    if (previousTask.status === "in_review" || task.status !== "in_review") return;
+    const session = database.getProductSessionByTechnicalTaskId(task.id);
+    if (!session || !resolved.deliveryProjects.has(session.projectId)) return;
+    if (!deliveryBranchForTask(task) || session.technicalApprovedDocument === null) return;
+    try {
+      startDelivery(session.id, actor);
+    } catch (error) {
+      events.emit("product.delivery.updated", {
+        projectId: session.projectId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
   function sanitizeTechnicalArtifact(session, content) {
     if (!content || !session.technicalAiThreadId) return content;
     const thread = aiChat.getThread(session.technicalAiThreadId);
@@ -2837,6 +3015,7 @@ export function createTaskboardServer(options = {}) {
     ));
     return {
       session: productSessionForResponse(session),
+      deliveryRun: database.getLatestDeliveryRunForSession(session.id),
       productAgent: productAgentSettingsForResponse(snapshot.thread),
       technicalAgent: productAgentSettingsForResponse(technicalSnapshot.thread),
       runs: snapshot.runs.map(productRunForResponse),
@@ -3724,6 +3903,20 @@ export function createTaskboardServer(options = {}) {
       }
 
       const submitReviewRoute = pathname.match(/^\/api\/product-sessions\/([^/]+)\/submit-review$/);
+      const deliveryRoute = pathname.match(/^\/api\/product-sessions\/([^/]+)\/delivery$/);
+      if (deliveryRoute) {
+        if (request.method !== "POST") return methodNotAllowed(response, ["POST"]);
+        assertNoQuery(url.searchParams, "POST /api/product-sessions/:id/delivery");
+        await assertEmptyRequestBody(request, "POST /api/product-sessions/:id/delivery");
+        const sessionId = decodeRouteSegment(deliveryRoute[1], "Product session id");
+        const deliveryRun = startDelivery(sessionId, actorFromRequest(request));
+        events.emit("product.delivery.updated", {
+          projectId: requireProductSession(sessionId).projectId,
+          deliveryRunId: deliveryRun.id,
+        });
+        return sendJson(response, 202, { deliveryRun });
+      }
+
       if (submitReviewRoute) {
         if (request.method !== "POST") return methodNotAllowed(response, ["POST"]);
         assertNoQuery(url.searchParams, "POST /api/product-sessions/:id/submit-review");
@@ -4665,6 +4858,7 @@ export function createTaskboardServer(options = {}) {
             throw error;
           }
           events.emit("task.updated", { task });
+          maybeStartDelivery(current, task, actor);
           return sendJson(response, 200, { task });
         }
         if (!action && request.method === "DELETE") {
@@ -4700,6 +4894,7 @@ export function createTaskboardServer(options = {}) {
             }
             await jira.moveTask(current, move.status);
           }
+          const actor = actorFromRequest(request);
           const task = database.moveTask(
             id,
             move.version,
@@ -4707,9 +4902,10 @@ export function createTaskboardServer(options = {}) {
             move.sortOrder,
             move.threadId,
             move.threadBinding,
-            actorFromRequest(request),
+            actor,
           );
           events.emit("task.moved", { task });
+          maybeStartDelivery(current, task, actor);
           return sendJson(response, 200, { task });
         }
         if (action === "archive" && request.method === "POST") {

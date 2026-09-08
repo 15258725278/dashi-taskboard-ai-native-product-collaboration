@@ -20,9 +20,9 @@ import {
   recordProductAcceptance,
   saveProductDocument,
   saveTechnicalDocument,
+  startProductAcceptanceDelivery,
   startProductSessionTurn,
   startTechnicalSessionTurn,
-  submitProductAcceptanceReview,
   subscribeProductSession,
   updateProductSessionAgentSettings,
   updateTechnicalSessionAgentSettings,
@@ -126,12 +126,6 @@ export function ProductCollaborationView({
   const [document, setDocument] = useState("");
   const [technicalDocument, setTechnicalDocument] = useState("");
   const [documentTab, setDocumentTab] = useState<"product" | "technical">("product");
-  const [deliveryNote, setDeliveryNote] = useState("");
-  const [implementationPr, setImplementationPr] = useState("");
-  const [testDeploymentUrl, setTestDeploymentUrl] = useState("");
-  const [testDeploymentWorkflowRun, setTestDeploymentWorkflowRun] = useState("");
-  const [testDeploymentImmutableTag, setTestDeploymentImmutableTag] = useState("");
-  const [testDeploymentPrNumbers, setTestDeploymentPrNumbers] = useState("");
   const [acceptanceNote, setAcceptanceNote] = useState("");
   const [busy, setBusy] = useState(false);
   const [settingsSaving, setSettingsSaving] = useState(false);
@@ -158,12 +152,6 @@ export function ProductCollaborationView({
     setSnapshot(next);
     setDocument(next.session.productDocument);
     setTechnicalDocument(next.session.technicalDocument);
-    setDeliveryNote(next.session.deliveryNote);
-    setImplementationPr(next.session.implementationPr ?? "");
-    setTestDeploymentUrl(next.session.testDeploymentUrl ?? "");
-    setTestDeploymentWorkflowRun(next.session.testDeploymentWorkflowRun ?? "");
-    setTestDeploymentImmutableTag(next.session.testDeploymentImmutableTag ?? "");
-    setTestDeploymentPrNumbers(next.session.testDeploymentPrNumbers.join(", "));
     setAcceptanceNote(next.session.acceptanceNote ?? "");
     setSessions((current) => current.map((item) => (
       item.id === next.session.id ? next.session : item
@@ -236,6 +224,15 @@ export function ProductCollaborationView({
   const technicalTask = snapshot?.session.technicalTaskId
     ? tasks.find((task) => task.id === snapshot.session.technicalTaskId) ?? null
     : null;
+  const deliveryRun = snapshot?.deliveryRun ?? null;
+  const deliveryRunning = deliveryRun !== null
+    && ["queued", "dispatching", "running"].includes(deliveryRun.status);
+  const deliveryWorktreeBound = technicalTask?.developmentContext?.type === "worktree"
+    && Boolean(technicalTask.developmentContext.path)
+    && Boolean(technicalTask.developmentContext.branch);
+  const acceptanceIds = useMemo(() => [...new Set(
+    snapshot?.session.approvedDocument?.match(/AC-\d{3}/g) ?? [],
+  )], [snapshot?.session.approvedDocument]);
   const defaultAgentSettings = useMemo<ProductAgentSettings | null>(() => {
     const model = models[0];
     return model ? {
@@ -275,6 +272,14 @@ export function ProductCollaborationView({
     }, 800);
     return () => window.clearInterval(timer);
   }, [isRunning, onError, refreshSession, selectedId]);
+
+  useEffect(() => {
+    if (!deliveryRunning || !selectedId) return;
+    const timer = window.setInterval(() => {
+      void refreshSession(selectedId).catch(onError);
+    }, 3_000);
+    return () => window.clearInterval(timer);
+  }, [deliveryRunning, onError, refreshSession, selectedId]);
 
   async function createSession() {
     if (!canWrite) return;
@@ -444,39 +449,12 @@ export function ProductCollaborationView({
     }
   }
 
-  async function submitReview() {
-    const prNumbers = [...new Set(testDeploymentPrNumbers
-      .split(",")
-      .map((value) => Number(value.trim()))
-      .filter((value) => Number.isSafeInteger(value) && value > 0))];
-    if (
-      !canTechnicalWrite
-      || !snapshot
-      || !technicalApproved
-      || !deliveryNote.trim()
-      || !implementationPr.trim()
-      || !testDeploymentUrl.trim()
-      || !testDeploymentWorkflowRun.trim()
-      || !testDeploymentImmutableTag.trim()
-      || prNumbers.length === 0
-    ) return;
+  async function startDelivery() {
+    if (!canTechnicalWrite || !snapshot || !technicalApproved || deliveryRunning || !deliveryWorktreeBound) return;
     setBusy(true);
     try {
-      const result = await submitProductAcceptanceReview(snapshot.session.id, {
-        note: deliveryNote.trim(),
-        implementationPr: implementationPr.trim(),
-        testDeployment: {
-          url: testDeploymentUrl.trim(),
-          workflowRun: testDeploymentWorkflowRun.trim(),
-          immutableTag: testDeploymentImmutableTag.trim(),
-          prNumbers,
-        },
-      });
-      setSnapshot((current) => current ? { ...current, session: result.session } : current);
-      setSessions((current) => current.map((item) => (
-        item.id === result.session.id ? result.session : item
-      )));
-      onTaskCreated(result.task);
+      const result = await startProductAcceptanceDelivery(snapshot.session.id);
+      setSnapshot((current) => current ? { ...current, deliveryRun: result.deliveryRun } : current);
     } catch (error) {
       onError(error);
     } finally {
@@ -969,89 +947,89 @@ export function ProductCollaborationView({
                         {text("产品退回", "Returned by product")}: {snapshot.session.acceptanceNote}
                       </p>
                     )}
-                    <textarea
-                      value={deliveryNote}
-                      onChange={(event) => setDeliveryNote(event.target.value)}
-                      placeholder={text("填写实现范围、测试结果和验收地址…", "Add implementation scope, test results, and acceptance URL…")}
-                      disabled={snapshot.session.acceptanceStatus === "accepted"}
-                    />
-                    <div className="delivery-evidence-grid">
-                      <label>
-                        <span>{text("实现 PR", "Implementation PR")}</span>
-                        <input
-                          type="url"
-                          value={implementationPr}
-                          onChange={(event) => setImplementationPr(event.target.value)}
-                          placeholder="https://github.com/org/repo/pull/123"
-                          disabled={snapshot.session.acceptanceStatus === "accepted"}
-                        />
-                      </label>
-                      <label>
-                        <span>{text("共享测试地址", "Shared test URL")}</span>
-                        <input
-                          type="url"
-                          value={testDeploymentUrl}
-                          onChange={(event) => setTestDeploymentUrl(event.target.value)}
-                          placeholder="https://test.example.com"
-                          disabled={snapshot.session.acceptanceStatus === "accepted"}
-                        />
-                      </label>
-                      <label>
-                        <span>{text("部署工作流", "Deployment workflow")}</span>
-                        <input
-                          type="url"
-                          value={testDeploymentWorkflowRun}
-                          onChange={(event) => setTestDeploymentWorkflowRun(event.target.value)}
-                          placeholder="https://github.com/org/repo/actions/runs/123"
-                          disabled={snapshot.session.acceptanceStatus === "accepted"}
-                        />
-                      </label>
-                      <label>
-                        <span>{text("不可变标签", "Immutable tag")}</span>
-                        <input
-                          value={testDeploymentImmutableTag}
-                          onChange={(event) => setTestDeploymentImmutableTag(event.target.value)}
-                          placeholder="manual-test-123-abcdef0"
-                          disabled={snapshot.session.acceptanceStatus === "accepted"}
-                        />
-                      </label>
-                      <label className="delivery-evidence-wide">
-                        <span>{text("部署包含的 PR 编号", "Deployed PR numbers")}</span>
-                        <input
-                          value={testDeploymentPrNumbers}
-                          onChange={(event) => setTestDeploymentPrNumbers(event.target.value)}
-                          placeholder={text("例如 123, 124", "For example 123, 124")}
-                          disabled={snapshot.session.acceptanceStatus === "accepted"}
-                        />
-                      </label>
+                    <div className={`delivery-automation-status ${deliveryRun?.status ?? "idle"}`}>
+                      <strong>{deliveryRun === null
+                        ? text("等待自动部署", "Ready to deploy")
+                        : deliveryRun.status === "queued"
+                          ? text("已进入部署队列", "Queued for deployment")
+                          : deliveryRun.status === "dispatching"
+                            ? text("正在启动本地部署", "Starting the local deployment")
+                            : deliveryRun.status === "running"
+                              ? text("正在构建并部署验收环境", "Building and deploying the acceptance environment")
+                              : deliveryRun.status === "failed"
+                                ? text("验收环境部署失败", "Acceptance deployment failed")
+                                : text("验收环境已就绪", "Acceptance environment is ready")}</strong>
+                      <p>{deliveryRun?.error ?? text(
+                        deliveryRun?.status === "succeeded"
+                          ? "系统已自动回填验收链接和技术交付记录。"
+                          : deliveryWorktreeBound
+                            ? "开发任务进入待验收后会自动部署；也可以在这里手动触发或重试。"
+                            : "请先在开发任务中绑定实际开发工作区，系统才能自动构建并部署。",
+                        deliveryRun?.status === "succeeded"
+                          ? "The acceptance link and technical delivery record were filled automatically."
+                          : deliveryWorktreeBound
+                            ? "Deployment starts automatically when development enters review. You can also start or retry it here."
+                            : "Bind the development task to its actual worktree before deploying.",
+                      )}</p>
+                      {deliveryRun?.workflowRunUrl && (
+                        <a href={deliveryRun.workflowRunUrl} target="_blank" rel="noreferrer">
+                          {text("查看部署进度", "View deployment progress")}
+                        </a>
+                      )}
                     </div>
-                    <button
-                      className="button primary"
-                      type="button"
-                      onClick={() => void submitReview()}
-                      disabled={busy
-                        || !deliveryNote.trim()
-                        || !implementationPr.trim()
-                        || !testDeploymentUrl.trim()
-                        || !testDeploymentWorkflowRun.trim()
-                        || !testDeploymentImmutableTag.trim()
-                        || !testDeploymentPrNumbers.trim()
-                        || snapshot.session.acceptanceStatus === "accepted"
-                        || technicalTask?.status === "in_review"}
-                    >{text("提交产品验收", "Submit for acceptance")}</button>
+                    {snapshot.session.testDeploymentUrl && (
+                      <a className="button primary acceptance-environment-link" href={snapshot.session.testDeploymentUrl} target="_blank" rel="noreferrer">
+                        {text("打开验收环境", "Open acceptance environment")}
+                      </a>
+                    )}
+                    {snapshot.session.acceptanceStatus !== "accepted" && !snapshot.session.deliverySubmittedAt && (
+                      <button
+                        className="button primary"
+                        type="button"
+                        onClick={() => void startDelivery()}
+                        disabled={busy || deliveryRunning || !deliveryWorktreeBound}
+                      >{deliveryRun?.status === "failed"
+                        ? text("重新部署验收环境", "Retry acceptance deployment")
+                        : text("部署验收环境", "Deploy acceptance environment")}</button>
+                    )}
                   </>
                 ) : (
                   <>
+                    {!snapshot.session.deliverySubmittedAt && deliveryRun && (
+                      <div className={`delivery-automation-status ${deliveryRun.status}`}>
+                        <strong>{deliveryRun.status === "failed"
+                          ? text("验收环境部署失败", "Acceptance deployment failed")
+                          : text("技术正在准备验收环境", "Engineering is preparing the acceptance environment")}</strong>
+                        <p>{deliveryRun.error ?? text(
+                          "部署完成后，验收链接会自动出现在这里。",
+                          "The acceptance link will appear here automatically when deployment finishes.",
+                        )}</p>
+                      </div>
+                    )}
                     <div className="delivery-note-content">
                       {snapshot.session.deliveryNote || text("技术尚未提交验收说明", "Engineering has not submitted delivery evidence")}
                     </div>
+                    {snapshot.session.testDeploymentUrl && (
+                      <a className="button primary acceptance-environment-link" href={snapshot.session.testDeploymentUrl} target="_blank" rel="noreferrer">
+                        {text("打开验收环境", "Open acceptance environment")}
+                      </a>
+                    )}
+                    {snapshot.session.deliverySubmittedAt && acceptanceIds.length > 0 && (
+                      <div className="acceptance-checklist">
+                        <strong>{text(`验收清单 · ${acceptanceIds.length} 项`, `Acceptance checklist · ${acceptanceIds.length} items`)}</strong>
+                        <div>{acceptanceIds.map((id) => <span key={id}>{id}</span>)}</div>
+                      </div>
+                    )}
                     {snapshot.session.deliverySubmittedAt && (
-                      <dl className="delivery-evidence-summary">
-                        <div><dt>{text("实现 PR", "Implementation PR")}</dt><dd><a href={snapshot.session.implementationPr ?? "#"} target="_blank" rel="noreferrer">{snapshot.session.implementationPr}</a></dd></div>
-                        <div><dt>{text("测试地址", "Test URL")}</dt><dd><a href={snapshot.session.testDeploymentUrl ?? "#"} target="_blank" rel="noreferrer">{snapshot.session.testDeploymentUrl}</a></dd></div>
-                        <div><dt>{text("不可变标签", "Immutable tag")}</dt><dd><code>{snapshot.session.testDeploymentImmutableTag}</code></dd></div>
-                        <div><dt>{text("PR 列表", "PR list")}</dt><dd>{snapshot.session.testDeploymentPrNumbers.join(", ")}</dd></div>
-                      </dl>
+                      <details className="delivery-technical-record">
+                        <summary>{text("技术交付记录", "Technical delivery record")}</summary>
+                        <dl className="delivery-evidence-summary">
+                          <div><dt>{text("实现记录", "Implementation record")}</dt><dd><a href={snapshot.session.implementationPr ?? "#"} target="_blank" rel="noreferrer">{snapshot.session.implementationPr}</a></dd></div>
+                          <div><dt>{text("部署记录", "Deployment record")}</dt><dd><a href={snapshot.session.testDeploymentWorkflowRun ?? "#"} target="_blank" rel="noreferrer">{snapshot.session.testDeploymentWorkflowRun}</a></dd></div>
+                          <div><dt>{text("部署版本", "Deployment version")}</dt><dd><code>{snapshot.session.testDeploymentImmutableTag}</code></dd></div>
+                          <div><dt>{text("开发任务", "Development task")}</dt><dd>{snapshot.session.testDeploymentPrNumbers.map((number) => `SKI-${number}`).join(", ")}</dd></div>
+                        </dl>
+                      </details>
                     )}
                     {technicalTask?.status === "in_review" && canWrite && (
                       <>

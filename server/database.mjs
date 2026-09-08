@@ -491,6 +491,35 @@ function productSessionFromRow(row) {
   };
 }
 
+function deliveryRunFromRow(row) {
+  return {
+    id: row.id,
+    productSessionId: row.product_session_id,
+    taskId: row.task_id,
+    status: row.status,
+    branch: row.branch,
+    workspacePath: row.workspace_path ?? null,
+    taskIdentifier: row.task_identifier ?? null,
+    repository: row.repository,
+    workflow: row.workflow,
+    workflowRef: row.workflow_ref,
+    baseRef: row.base_ref,
+    deployChannel: row.deploy_channel,
+    acceptanceUrl: row.acceptance_url,
+    implementationPr: row.implementation_pr,
+    pullRequestNumber: row.pull_request_number,
+    workflowRunId: row.workflow_run_id,
+    workflowRunUrl: row.workflow_run_url,
+    immutableTag: row.immutable_tag,
+    mergedSha: row.merged_sha,
+    error: row.error,
+    createdBy: row.created_by,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    completedAt: row.completed_at,
+  };
+}
+
 function projectPrefix(project) {
   const idPrefix = project.id.toUpperCase().replace(/[^A-Z0-9]+/g, "").slice(0, 12) || "TASK";
   const existingPrefix = project.first_identifier?.replace(/-\d+$/, "");
@@ -755,9 +784,53 @@ export class TaskboardDatabase {
       CREATE INDEX IF NOT EXISTS product_sessions_project_updated
         ON product_sessions(project_id, updated_at DESC, id);
 
+      CREATE TABLE IF NOT EXISTS delivery_runs (
+        id TEXT PRIMARY KEY,
+        product_session_id TEXT NOT NULL REFERENCES product_sessions(id) ON DELETE CASCADE,
+        task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+        status TEXT NOT NULL CHECK (status IN (
+          'queued', 'dispatching', 'running', 'succeeded', 'failed'
+        )),
+        branch TEXT NOT NULL,
+        workspace_path TEXT,
+        task_identifier TEXT,
+        repository TEXT NOT NULL,
+        workflow TEXT NOT NULL,
+        workflow_ref TEXT NOT NULL,
+        base_ref TEXT NOT NULL,
+        deploy_channel TEXT NOT NULL,
+        acceptance_url TEXT NOT NULL,
+        implementation_pr TEXT,
+        pull_request_number INTEGER,
+        workflow_run_id INTEGER,
+        workflow_run_url TEXT,
+        immutable_tag TEXT,
+        merged_sha TEXT,
+        error TEXT,
+        created_by TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        completed_at TEXT
+      );
+
+      CREATE INDEX IF NOT EXISTS delivery_runs_session_created
+        ON delivery_runs(product_session_id, created_at DESC, id);
+
+      CREATE UNIQUE INDEX IF NOT EXISTS delivery_runs_one_active
+        ON delivery_runs(product_session_id)
+        WHERE status IN ('queued', 'dispatching', 'running');
+
     `);
 
     const productSessionColumns = this.database.prepare("PRAGMA table_info(product_sessions)").all();
+    const deliveryRunColumns = this.database.prepare("PRAGMA table_info(delivery_runs)").all();
+    const deliveryRunColumnNames = new Set(deliveryRunColumns.map((column) => column.name));
+    if (!deliveryRunColumnNames.has("workspace_path")) {
+      this.database.exec("ALTER TABLE delivery_runs ADD COLUMN workspace_path TEXT");
+    }
+    if (!deliveryRunColumnNames.has("task_identifier")) {
+      this.database.exec("ALTER TABLE delivery_runs ADD COLUMN task_identifier TEXT");
+    }
     const productSessionMigrations = [
       ["technical_ai_thread_id", "TEXT REFERENCES ai_chat_threads(id) ON DELETE SET NULL"],
       ["technical_document", "TEXT NOT NULL DEFAULT ''"],
@@ -1896,6 +1969,103 @@ export class TaskboardDatabase {
     return row ? productSessionFromRow(row) : null;
   }
 
+  getProductSessionByTechnicalTaskId(taskId) {
+    const row = this.database.prepare(
+      "SELECT * FROM product_sessions WHERE technical_task_id = ?",
+    ).get(taskId);
+    return row ? productSessionFromRow(row) : null;
+  }
+
+  getDeliveryRun(id) {
+    const row = this.database.prepare("SELECT * FROM delivery_runs WHERE id = ?").get(id);
+    return row ? deliveryRunFromRow(row) : null;
+  }
+
+  getLatestDeliveryRunForSession(productSessionId) {
+    const row = this.database.prepare(`
+      SELECT * FROM delivery_runs
+      WHERE product_session_id = ?
+      ORDER BY created_at DESC, id DESC
+      LIMIT 1
+    `).get(productSessionId);
+    return row ? deliveryRunFromRow(row) : null;
+  }
+
+  failActiveDeliveryRuns(message = "Taskboard restarted before the acceptance deployment completed") {
+    const timestamp = now();
+    return this.database.prepare(`
+      UPDATE delivery_runs
+      SET status = 'failed', error = ?, completed_at = ?, updated_at = ?
+      WHERE status IN ('queued', 'dispatching', 'running')
+    `).run(message, timestamp, timestamp).changes;
+  }
+
+  createDeliveryRun(input) {
+    const id = input.id ?? randomUUID();
+    const timestamp = now();
+    try {
+      this.database.prepare(`
+        INSERT INTO delivery_runs (
+          id, product_session_id, task_id, status, branch,
+          workspace_path, task_identifier,
+          repository, workflow, workflow_ref, base_ref, deploy_channel,
+          acceptance_url, created_by, created_at, updated_at
+        ) VALUES (?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        id,
+        input.productSessionId,
+        input.taskId,
+        input.branch,
+        input.workspacePath,
+        input.taskIdentifier,
+        input.repository,
+        input.workflow,
+        input.workflowRef,
+        input.baseRef,
+        input.deployChannel,
+        input.acceptanceUrl,
+        input.createdBy,
+        timestamp,
+        timestamp,
+      );
+    } catch (error) {
+      if (String(error?.message ?? "").includes("delivery_runs_one_active")) {
+        throw new ApiError(409, "DELIVERY_ALREADY_RUNNING", "An acceptance deployment is already running");
+      }
+      throw error;
+    }
+    return this.getDeliveryRun(id);
+  }
+
+  updateDeliveryRun(id, changes) {
+    const current = this.getDeliveryRun(id);
+    if (!current) {
+      throw new ApiError(404, "DELIVERY_RUN_NOT_FOUND", `Delivery run '${id}' does not exist`);
+    }
+    const columns = {
+      status: "status",
+      acceptanceUrl: "acceptance_url",
+      implementationPr: "implementation_pr",
+      pullRequestNumber: "pull_request_number",
+      workflowRunId: "workflow_run_id",
+      workflowRunUrl: "workflow_run_url",
+      immutableTag: "immutable_tag",
+      mergedSha: "merged_sha",
+      error: "error",
+      completedAt: "completed_at",
+    };
+    const entries = Object.entries(changes).filter(([key]) => Object.hasOwn(columns, key));
+    if (entries.length === 0) return current;
+    const assignments = entries.map(([key]) => `${columns[key]} = ?`);
+    const values = entries.map(([, value]) => value);
+    assignments.push("updated_at = ?");
+    values.push(now(), id);
+    this.database.prepare(`
+      UPDATE delivery_runs SET ${assignments.join(", ")} WHERE id = ?
+    `).run(...values);
+    return this.getDeliveryRun(id);
+  }
+
   createProductSession(input) {
     const id = input.id ?? randomUUID();
     const timestamp = now();
@@ -2148,12 +2318,25 @@ export class TaskboardDatabase {
       throw new ApiError(409, "DELIVERY_NOT_SUBMITTED", "Submit delivery evidence before product acceptance");
     }
     const timestamp = now();
-    this.database.prepare(`
-      UPDATE product_sessions
-      SET acceptance_status = ?, acceptance_note = ?, acceptance_at = ?,
-          acceptance_by = ?, updated_at = ?
-      WHERE id = ?
-    `).run(outcome, note, timestamp, actor.name, timestamp, id);
+    if (outcome === "changes_requested") {
+      this.database.prepare(`
+        UPDATE product_sessions
+        SET acceptance_status = ?, acceptance_note = ?, acceptance_at = ?,
+            acceptance_by = ?, delivery_note = '', delivery_submitted_at = NULL,
+            delivery_submitted_by = NULL, implementation_pr = NULL,
+            test_deployment_url = NULL, test_deployment_workflow_run = NULL,
+            test_deployment_immutable_tag = NULL, test_deployment_pr_numbers = '[]',
+            updated_at = ?
+        WHERE id = ?
+      `).run(outcome, note, timestamp, actor.name, timestamp, id);
+    } else {
+      this.database.prepare(`
+        UPDATE product_sessions
+        SET acceptance_status = ?, acceptance_note = ?, acceptance_at = ?,
+            acceptance_by = ?, updated_at = ?
+        WHERE id = ?
+      `).run(outcome, note, timestamp, actor.name, timestamp, id);
+    }
     return this.getProductSession(id);
   }
 

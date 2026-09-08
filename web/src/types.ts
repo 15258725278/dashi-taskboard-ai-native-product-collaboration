@@ -99,8 +99,34 @@ export interface ProductSession {
   updatedAt: string;
 }
 
+export interface DeliveryRun {
+  id: string;
+  productSessionId: string;
+  taskId: string;
+  status: "queued" | "dispatching" | "running" | "succeeded" | "failed";
+  branch: string;
+  repository: string;
+  workflow: string;
+  workflowRef: string;
+  baseRef: string;
+  deployChannel: string;
+  acceptanceUrl: string;
+  implementationPr: string | null;
+  pullRequestNumber: number | null;
+  workflowRunId: number | null;
+  workflowRunUrl: string | null;
+  immutableTag: string | null;
+  mergedSha: string | null;
+  error: string | null;
+  createdBy: string;
+  createdAt: string;
+  updatedAt: string;
+  completedAt: string | null;
+}
+
 export interface ProductSessionSnapshot {
   session: ProductSession;
+  deliveryRun: DeliveryRun | null;
   productAgent: ProductAgentSettings;
   technicalAgent: ProductAgentSettings | null;
   events: ProductAiEvent[];

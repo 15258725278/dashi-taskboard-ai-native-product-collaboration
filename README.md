@@ -183,6 +183,29 @@ To use a different UI origin, set `window.__CODEX_TASKBOARD_URL__` before the us
 | `CODEX_TASKBOARD_TRUSTED_ORIGINS` | unset | Comma-separated exact HTTPS origins allowed through a loopback reverse tunnel |
 | `CODEX_TASKBOARD_DATA_DIR` | `.data` | SQLite data directory |
 | `CODEX_TASKBOARD_URL` | `http://127.0.0.1:47823` | CLI API origin |
+| `CODEX_TASKBOARD_DELIVERY_PROJECTS` | unset | JSON project map for automatic acceptance deployments |
+
+Automatic product acceptance deployment is configured once per project. The
+technical task must be bound to its real development worktree. When that task
+enters `in_review`, Taskboard runs the configured deployment script inside that
+worktree and fills the acceptance link and delivery record automatically.
+
+```json
+{
+  "skillhub": {
+    "mode": "local",
+    "deployScript": "scripts/taskboard-local-acceptance-deploy.sh",
+    "acceptanceUrl": "https://admin.example.test/skillhub/",
+    "deploymentRecordUrl": "https://admin.example.test/taskboard/?project=skillhub"
+  }
+}
+```
+
+The deployment script path is relative to the bound worktree and must remain
+inside it. The script receives the delivery ID and configured URLs as arguments,
+writes build logs to stderr, and prints one JSON manifest to stdout containing
+`deliveryId`, `acceptanceUrl`, `deploymentRecordUrl`, `implementationUrl`,
+`immutableTag`, and `gitSha`.
 
 `npm start` prints both the local URL and the available LAN URLs. Teammates on the same trusted network can open one of those LAN URLs and use the same taskboard service. Task, comment, and attachment changes are broadcast to every open client through server-sent events; reconnecting clients perform a full refresh so changes made while disconnected are not missed. A teammate using `taskctl` can point it at the shared service with `CODEX_TASKBOARD_URL=http://<host-ip>:47823`.
 

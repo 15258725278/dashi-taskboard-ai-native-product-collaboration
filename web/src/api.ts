@@ -16,6 +16,7 @@ import type {
   CodexProjectIdentity,
   CodexThreadBinding,
   DevelopmentScan,
+  DeliveryRun,
   HostContext,
   IssueRelationOrigin,
   IssueRelationType,
@@ -648,6 +649,15 @@ export async function submitProductAcceptanceReview(
   return request<{ session: ProductSession; task: Task }>(
     `/api/product-sessions/${encodeURIComponent(sessionId)}/submit-review`,
     { method: "POST", body: JSON.stringify(input) },
+  );
+}
+
+export async function startProductAcceptanceDelivery(
+  sessionId: string,
+): Promise<{ deliveryRun: DeliveryRun }> {
+  return request<{ deliveryRun: DeliveryRun }>(
+    `/api/product-sessions/${encodeURIComponent(sessionId)}/delivery`,
+    { method: "POST" },
   );
 }
 
