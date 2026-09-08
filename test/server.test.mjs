@@ -287,6 +287,16 @@ test("authenticated public mode treats the token-authenticated Codex panel as lo
   assert.equal(metadata.body.capabilities.technicalCollaborationWrite, true);
   assert.equal(metadata.body.capabilities.taskWrite, true);
 
+  const taskctlMetadata = await request(baseUrl, `/${instanceToken}/api/meta`, {
+    headers: { "x-taskboard-client": "taskctl" },
+  });
+  assert.equal(taskctlMetadata.response.status, 200);
+  assert.equal(taskctlMetadata.body.capabilities.publicRole, "admin");
+
+  const unmarkedMetadata = await request(baseUrl, `/${instanceToken}/api/meta`);
+  assert.equal(unmarkedMetadata.response.status, 401);
+  assert.equal(unmarkedMetadata.body.error.code, "UNAUTHORIZED");
+
   const createdProject = await request(baseUrl, `/${instanceToken}/api/projects`, {
     method: "POST",
     headers: launcherHeaders,
