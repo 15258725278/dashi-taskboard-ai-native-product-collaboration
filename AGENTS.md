@@ -106,48 +106,46 @@ Make the smallest root-cause change. Do not add unrelated refactors, abstraction
 ## 6. Review by risk
 
 - Each dispatched execution conversation decides the review complexity for its own implementation after direct-path verification. The coordinating conversation does not make this complexity decision or perform the code review.
-- For lower-complexity work, the dispatched execution Agent performs the code review. It checks implementation correctness, the requested path, scope, and real bugs without sending the PR to ChatGPT web Pro.
-- For complex or risky work, the corresponding dispatched execution conversation opens ChatGPT web Pro itself and submits the PR URL and exact head SHA for review. It asks Pro to review only implementation correctness and real bugs.
-- The user grants standing authorization to submit the public PR URL, exact head SHA, and established review instructions to ChatGPT web Pro; execution conversations send them directly without requesting confirmation each time.
+- For lower-complexity work, the dispatched execution Agent performs a focused local Codex review. It checks implementation correctness, the requested path, scope, and real bugs.
+- For complex or risky work, the same dispatched execution conversation performs a deep local Codex review against the complete diff at the exact head SHA. The review must inspect every changed file, trace the affected operation path and external contracts, and report actionable correctness defects before integration.
+- Do not send repository code, PR links, or review material to ChatGPT Web or another external review surface. Keep review inside the local Codex development conversation and repository toolchain.
 - Development and review must avoid over-design and over-defensive recommendations. Do not request or add hypothetical guardrails, unrelated refactors, compatibility layers, style preferences, or scope expansion.
-- Before any change is submitted to ChatGPT web Pro, complete the requested function, verify its direct real path, and provide the user with a working demo that uses the relevant real data or runtime. Start Pro review only after the user confirms that the function works. This gate applies to UI and non-UI work. Do not use Pro to discover whether an unfinished function basically works.
-- Independent dispatched conversations run their required reviews in parallel. Do not serialize independent Agent or Pro reviews through the coordinating conversation.
-- For Pro review, wait for the complete answer. Do not use an instant-answer result. Check at approximately five-minute intervals when necessary; a complete review can take more than 30 minutes.
-- Fix actionable blockers in the same PR. The dispatched execution conversation decides whether the changed complexity warrants another Pro review; trivial targeted follow-up edits can use its normal Agent review.
+- Before starting the required local review, complete the requested function, verify its direct real path, and provide the user with a working demo that uses the relevant real data or runtime. Start review only after the user confirms that the function works. This gate applies to UI and non-UI work. Do not use review to discover whether an unfinished function basically works.
+- Independent dispatched conversations run their required local reviews in parallel. Do not serialize independent reviews through the coordinating conversation.
+- Fix actionable blockers in the same PR. The dispatched execution conversation decides whether the changed complexity warrants another deep local review; trivial targeted follow-up edits can use its normal focused review.
 - Before accepting a handoff, the coordinating conversation checks that the execution evidence, scope, CI state, complexity decision, and required review result are present. It does not repeat the code review.
 - Decide the UI confirmation gate from the actual visual impact and risk. Do not trigger it mechanically because code is in a UI component or changes a UI file.
 - Logic-only changes on a UI surface do not need separate user UI confirmation when they do not cause a meaningful visual change. This includes interaction logic, data behavior, toggle behavior, popover close conditions, and copy-and-paste behavior.
 - Small, low-risk, and visually unambiguous changes can skip user UI confirmation after the coordinator checks the real path and visual evidence. Examples include a local font-size, spacing, alignment, or color adjustment.
 - Require user UI confirmation before merge when the change adds UI, meaningfully changes layout, information hierarchy, or the presentation of a core interaction, has multiple reasonable visual choices, or the user explicitly asks to confirm the style.
-- User confirmation is a functional acceptance gate before Pro review. Ask only after the full function is complete and direct verification passes. Never ask the user to confirm a partially implemented UI. After confirmation, independent required Pro reviews may run in parallel.
-- After Pro approval, visual-only adjustments made from the user's final UI feedback do not require another Pro review. The coordinator checks that the delta is limited to the requested visual change, reruns the real path, and can then proceed to merge. If the adjustment changes functional logic or introduces new complex risk, reassess whether code review or Pro review is required.
-- The dispatched execution conversation closes its temporary review browser tabs after review finishes.
+- User confirmation is a functional acceptance gate before the required local review. Ask only after the full function is complete and direct verification passes. Never ask the user to confirm a partially implemented UI. After confirmation, independent required local reviews may run in parallel.
+- After deep local review approval, visual-only adjustments made from the user's final UI feedback do not require another deep review. The coordinator checks that the delta is limited to the requested visual change, reruns the real path, and can then proceed to merge. If the adjustment changes functional logic or introduces new complex risk, reassess the required local review depth.
 
 Use this review classification:
 
-- **Agent review**: documentation, README, copy, CSS, a local font/spacing/color change, a small direct UI behavior change, or a narrow logic fix with no process, persistence, migration, concurrency, security, or cross-project effect.
-- **Pro review**: Launcher lifecycle, native host or Codex injection, process management, updater or release behavior, persistent-data migration, destructive file handling, complex concurrency, cross-project state, external boundary changes, or a broad external contributor PR.
+- **Focused local review**: documentation, README, copy, CSS, a local font/spacing/color change, a small direct UI behavior change, or a narrow logic fix with no process, persistence, migration, concurrency, security, or cross-project effect.
+- **Deep local review**: Launcher lifecycle, native host or Codex injection, process management, updater or release behavior, persistent-data migration, destructive file handling, complex concurrency, cross-project state, external boundary changes, or a broad external contributor PR.
 - File count and UI file location do not determine review level. Use blast radius and failure cost.
-- Skipping Pro for a low-risk change is the expected path, not an exception that needs extra justification.
-- Before starting Pro, obtain the user's confirmation from the working demo, then use a stable PR head based on the current merge wave. Submit only the public PR URL, exact head SHA, and the instruction to review implementation correctness and real bugs without over-design or over-defense.
-- If main advances after Pro, repeat Pro only when the integration changes reviewed functional logic or creates a real overlapping risk. A conflict-free merge commit or trivial targeted fix uses Agent review and direct-path verification.
+- Using focused review for a low-risk change is the expected path, not an exception that needs extra justification.
+- Before starting deep local review, obtain the user's confirmation from the working demo, then use a stable exact head SHA based on the current merge wave. Review implementation correctness and real bugs without over-design or over-defense.
+- If main advances after deep local review, repeat it only when the integration changes reviewed functional logic or creates a real overlapping risk. A conflict-free merge commit or trivial targeted fix uses focused local review and direct-path verification.
 
 ## 7. CI and integration waves
 
 - Use one PR for a coherent group of small issues. Do not create one PR per issue when the changes share a feature chain and can be reviewed and accepted together.
-- Establish a merge wave before review starts. Keep its base stable while independent PRs run CI and Pro in parallel, then merge them in a planned conflict order.
+- Establish a merge wave before review starts. Keep its base stable while independent PRs run CI and local review in parallel, then merge them in a planned conflict order.
 - Do not merge an early low-priority PR when doing so will force several active related PRs to update their base, rerun packaging, and invalidate exact-head review. Urgent blockers are the exception.
 - After main advances, update only PRs that are actually conflicting, not mergeable, or affected by overlapping behavior. Do not mechanically merge main into every open branch.
 - Local validation should be focused. Let PR CI provide the broad repository check. Do not duplicate a successful full CI run with the same full local packaging unless the direct task path requires the local artifact.
 - Avoid duplicate branch `push` and `pull_request` CI for the same SHA. Workflow owners should use branch filters and concurrency cancellation so superseded or duplicate runs do not consume both macOS and Windows builders.
 - Use path-aware CI when available: Web-only, documentation, CSS, and copy changes use the fast lane; platform packaging runs only for Launcher, bundle, platform, updater, release, or final integration changes.
-- CI may run as soon as each PR reaches a stable exact head. After the working demo is confirmed by the user, run independent required Pro reviews in parallel. Do not serialize them through the coordinating conversation.
+- CI may run as soon as each PR reaches a stable exact head. After the working demo is confirmed by the user, run independent required local reviews in parallel. Do not serialize them through the coordinating conversation.
 - Present each task's working demo as soon as that task completes implementation and direct verification. Do not hold completed demos until the whole batch is ready. Other tasks continue in parallel while the user checks it. Related changes may share one preview only when they become ready together or must be integrated to work; this must not delay an already usable demo.
 
 ## 8. Acceptance and issue status
 
 - Reviewer approval means ready for user inspection, not user acceptance.
-- When work meets the user confirmation gate, put the complete directly verified function into the Taskboard-launched Codex App and ask the user to confirm that the function and final visual style work before starting any required Pro review.
+- When work meets the user confirmation gate, put the complete directly verified function into the Taskboard-launched Codex App and ask the user to confirm that the function and final visual style work before starting any required local review.
 - Do not merge work that meets the UI confirmation gate until the user confirms its style. After visual-only feedback is applied and directly verified, the change can proceed without repeating Pro review.
 - UI-surface work that does not meet the confirmation gate can proceed after the coordinator verifies the real path, visual impact, scope, and required review without a separate user UI pause.
 - After implementation and required review pass, move the issue to `in_review`.
