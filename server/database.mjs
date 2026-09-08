@@ -498,6 +498,8 @@ function deliveryRunFromRow(row) {
     taskId: row.task_id,
     status: row.status,
     branch: row.branch,
+    workspacePath: row.workspace_path ?? null,
+    taskIdentifier: row.task_identifier ?? null,
     repository: row.repository,
     workflow: row.workflow,
     workflowRef: row.workflow_ref,
@@ -790,6 +792,8 @@ export class TaskboardDatabase {
           'queued', 'dispatching', 'running', 'succeeded', 'failed'
         )),
         branch TEXT NOT NULL,
+        workspace_path TEXT,
+        task_identifier TEXT,
         repository TEXT NOT NULL,
         workflow TEXT NOT NULL,
         workflow_ref TEXT NOT NULL,
@@ -819,6 +823,14 @@ export class TaskboardDatabase {
     `);
 
     const productSessionColumns = this.database.prepare("PRAGMA table_info(product_sessions)").all();
+    const deliveryRunColumns = this.database.prepare("PRAGMA table_info(delivery_runs)").all();
+    const deliveryRunColumnNames = new Set(deliveryRunColumns.map((column) => column.name));
+    if (!deliveryRunColumnNames.has("workspace_path")) {
+      this.database.exec("ALTER TABLE delivery_runs ADD COLUMN workspace_path TEXT");
+    }
+    if (!deliveryRunColumnNames.has("task_identifier")) {
+      this.database.exec("ALTER TABLE delivery_runs ADD COLUMN task_identifier TEXT");
+    }
     const productSessionMigrations = [
       ["technical_ai_thread_id", "TEXT REFERENCES ai_chat_threads(id) ON DELETE SET NULL"],
       ["technical_document", "TEXT NOT NULL DEFAULT ''"],
@@ -1995,14 +2007,17 @@ export class TaskboardDatabase {
       this.database.prepare(`
         INSERT INTO delivery_runs (
           id, product_session_id, task_id, status, branch,
+          workspace_path, task_identifier,
           repository, workflow, workflow_ref, base_ref, deploy_channel,
           acceptance_url, created_by, created_at, updated_at
-        ) VALUES (?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         id,
         input.productSessionId,
         input.taskId,
         input.branch,
+        input.workspacePath,
+        input.taskIdentifier,
         input.repository,
         input.workflow,
         input.workflowRef,

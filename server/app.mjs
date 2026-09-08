@@ -32,8 +32,9 @@ import { ApiError, TaskboardDatabase } from "./database.mjs";
 import {
   DELIVERY_PROJECTS_ENV,
   deliveryBranchForTask,
+  deliveryWorkspaceForTask,
   parseDeliveryProjects,
-  runGitHubDelivery,
+  runLocalDelivery,
 } from "./delivery-automation.mjs";
 import { createJiraConfigStore } from "./jira-config.mjs";
 import { createJiraIntegration } from "./jira-integration.mjs";
@@ -2760,7 +2761,7 @@ export function createTaskboardServer(options = {}) {
   }
 
   const deliveryExecutions = new Map();
-  const deliveryRunner = options.deliveryRunner ?? runGitHubDelivery;
+  const deliveryRunner = options.deliveryRunner ?? runLocalDelivery;
 
   function deliveryConfigForSession(session) {
     const config = resolved.deliveryProjects.get(session.projectId);
@@ -2768,7 +2769,7 @@ export function createTaskboardServer(options = {}) {
       throw new ApiError(
         409,
         "DELIVERY_AUTOMATION_NOT_CONFIGURED",
-        `Project '${session.projectId}' does not have an acceptance deployment workflow`,
+        `Project '${session.projectId}' does not have an acceptance deployment configuration`,
       );
     }
     return config;
@@ -2779,6 +2780,8 @@ export function createTaskboardServer(options = {}) {
       const result = await deliveryRunner({
         deliveryId: run.id,
         branch: run.branch,
+        workspacePath: run.workspacePath,
+        taskIdentifier: run.taskIdentifier,
         config,
         onUpdate: (changes) => database.updateDeliveryRun(run.id, changes),
       });
@@ -2809,7 +2812,7 @@ export function createTaskboardServer(options = {}) {
         );
       }
       session = database.submitForProductAcceptance(session.id, {
-        note: `自动验收部署完成。PR #${result.prNumbers.join(", #")} 已部署到共享验收环境。`,
+        note: `自动验收部署完成。${task.identifier} 已部署到共享验收环境。`,
         implementationPr: result.implementationPr,
         testDeployment: {
           url: result.acceptanceUrl,
@@ -2878,18 +2881,28 @@ export function createTaskboardServer(options = {}) {
         "Bind the technical task to its development branch before deploying",
       );
     }
+    const workspacePath = deliveryWorkspaceForTask(task);
+    if (!workspacePath) {
+      throw new ApiError(
+        409,
+        "DELIVERY_WORKTREE_REQUIRED",
+        "Bind the technical task to its development worktree before deploying",
+      );
+    }
     const config = deliveryConfigForSession(session);
     const active = database.getLatestDeliveryRunForSession(session.id);
     if (active && ["queued", "dispatching", "running"].includes(active.status)) return active;
     const run = database.createDeliveryRun({
       productSessionId: session.id,
       taskId: task.id,
+      taskIdentifier: task.identifier,
+      workspacePath,
       branch,
-      repository: config.repository,
-      workflow: config.workflow,
-      workflowRef: config.workflowRef,
-      baseRef: config.baseRef,
-      deployChannel: config.deployChannel,
+      repository: "local",
+      workflow: config.deployScript,
+      workflowRef: "worktree",
+      baseRef: "local",
+      deployChannel: "local-acceptance",
       acceptanceUrl: config.acceptanceUrl,
       createdBy: actor.name,
     });

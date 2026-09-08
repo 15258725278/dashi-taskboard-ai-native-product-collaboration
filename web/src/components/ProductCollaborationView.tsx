@@ -227,7 +227,9 @@ export function ProductCollaborationView({
   const deliveryRun = snapshot?.deliveryRun ?? null;
   const deliveryRunning = deliveryRun !== null
     && ["queued", "dispatching", "running"].includes(deliveryRun.status);
-  const deliveryBranchBound = Boolean(technicalTask?.developmentContext?.branch);
+  const deliveryWorktreeBound = technicalTask?.developmentContext?.type === "worktree"
+    && Boolean(technicalTask.developmentContext.path)
+    && Boolean(technicalTask.developmentContext.branch);
   const acceptanceIds = useMemo(() => [...new Set(
     snapshot?.session.approvedDocument?.match(/AC-\d{3}/g) ?? [],
   )], [snapshot?.session.approvedDocument]);
@@ -448,7 +450,7 @@ export function ProductCollaborationView({
   }
 
   async function startDelivery() {
-    if (!canTechnicalWrite || !snapshot || !technicalApproved || deliveryRunning || !deliveryBranchBound) return;
+    if (!canTechnicalWrite || !snapshot || !technicalApproved || deliveryRunning || !deliveryWorktreeBound) return;
     setBusy(true);
     try {
       const result = await startProductAcceptanceDelivery(snapshot.session.id);
@@ -951,7 +953,7 @@ export function ProductCollaborationView({
                         : deliveryRun.status === "queued"
                           ? text("已进入部署队列", "Queued for deployment")
                           : deliveryRun.status === "dispatching"
-                            ? text("正在识别 PR 并启动工作流", "Finding the PR and starting the workflow")
+                            ? text("正在启动本地部署", "Starting the local deployment")
                             : deliveryRun.status === "running"
                               ? text("正在构建并部署验收环境", "Building and deploying the acceptance environment")
                               : deliveryRun.status === "failed"
@@ -960,14 +962,14 @@ export function ProductCollaborationView({
                       <p>{deliveryRun?.error ?? text(
                         deliveryRun?.status === "succeeded"
                           ? "系统已自动回填验收链接和技术交付记录。"
-                          : deliveryBranchBound
+                          : deliveryWorktreeBound
                             ? "开发任务进入待验收后会自动部署；也可以在这里手动触发或重试。"
-                            : "请先在开发任务中绑定实际开发分支，系统才能识别 PR 并自动部署。",
+                            : "请先在开发任务中绑定实际开发工作区，系统才能自动构建并部署。",
                         deliveryRun?.status === "succeeded"
                           ? "The acceptance link and technical delivery record were filled automatically."
-                          : deliveryBranchBound
+                          : deliveryWorktreeBound
                             ? "Deployment starts automatically when development enters review. You can also start or retry it here."
-                            : "Bind the development task to its actual branch before deploying.",
+                            : "Bind the development task to its actual worktree before deploying.",
                       )}</p>
                       {deliveryRun?.workflowRunUrl && (
                         <a href={deliveryRun.workflowRunUrl} target="_blank" rel="noreferrer">
@@ -985,7 +987,7 @@ export function ProductCollaborationView({
                         className="button primary"
                         type="button"
                         onClick={() => void startDelivery()}
-                        disabled={busy || deliveryRunning || !deliveryBranchBound}
+                        disabled={busy || deliveryRunning || !deliveryWorktreeBound}
                       >{deliveryRun?.status === "failed"
                         ? text("重新部署验收环境", "Retry acceptance deployment")
                         : text("部署验收环境", "Deploy acceptance environment")}</button>
@@ -1022,10 +1024,10 @@ export function ProductCollaborationView({
                       <details className="delivery-technical-record">
                         <summary>{text("技术交付记录", "Technical delivery record")}</summary>
                         <dl className="delivery-evidence-summary">
-                          <div><dt>{text("实现 PR", "Implementation PR")}</dt><dd><a href={snapshot.session.implementationPr ?? "#"} target="_blank" rel="noreferrer">{snapshot.session.implementationPr}</a></dd></div>
-                          <div><dt>{text("部署工作流", "Workflow run")}</dt><dd><a href={snapshot.session.testDeploymentWorkflowRun ?? "#"} target="_blank" rel="noreferrer">{snapshot.session.testDeploymentWorkflowRun}</a></dd></div>
-                          <div><dt>{text("不可变标签", "Immutable tag")}</dt><dd><code>{snapshot.session.testDeploymentImmutableTag}</code></dd></div>
-                          <div><dt>{text("PR 列表", "PR list")}</dt><dd>{snapshot.session.testDeploymentPrNumbers.join(", ")}</dd></div>
+                          <div><dt>{text("实现记录", "Implementation record")}</dt><dd><a href={snapshot.session.implementationPr ?? "#"} target="_blank" rel="noreferrer">{snapshot.session.implementationPr}</a></dd></div>
+                          <div><dt>{text("部署记录", "Deployment record")}</dt><dd><a href={snapshot.session.testDeploymentWorkflowRun ?? "#"} target="_blank" rel="noreferrer">{snapshot.session.testDeploymentWorkflowRun}</a></dd></div>
+                          <div><dt>{text("部署版本", "Deployment version")}</dt><dd><code>{snapshot.session.testDeploymentImmutableTag}</code></dd></div>
+                          <div><dt>{text("开发任务", "Development task")}</dt><dd>{snapshot.session.testDeploymentPrNumbers.map((number) => `SKI-${number}`).join(", ")}</dd></div>
                         </dl>
                       </details>
                     )}

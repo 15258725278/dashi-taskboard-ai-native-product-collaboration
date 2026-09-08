@@ -1,6 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
-import os from "node:os";
+import { realpath } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 
@@ -48,21 +47,28 @@ export function parseDeliveryProjects(value) {
     if (!config || typeof config !== "object" || Array.isArray(config)) {
       throw new Error(`${DELIVERY_PROJECTS_ENV}.${projectId} must be an object`);
     }
-    const repository = requiredString(config.repository, `${projectId}.repository`);
-    if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository)) {
-      throw new Error(`${projectId}.repository must use owner/repository form`);
+    const mode = requiredString(config.mode ?? "local", `${projectId}.mode`);
+    if (mode !== "local") throw new Error(`${projectId}.mode must be local`);
+    const deployScript = requiredString(config.deployScript, `${projectId}.deployScript`);
+    if (path.isAbsolute(deployScript)) {
+      throw new Error(`${projectId}.deployScript must be relative to the bound worktree`);
     }
     return [projectId, {
-      repository,
-      workflow: requiredString(config.workflow, `${projectId}.workflow`),
-      workflowRef: requiredString(config.workflowRef ?? "main", `${projectId}.workflowRef`),
-      baseRef: requiredString(config.baseRef ?? "main", `${projectId}.baseRef`),
-      deployChannel: requiredString(
-        config.deployChannel ?? "manual-test-hk",
-        `${projectId}.deployChannel`,
-      ),
+      mode,
+      deployScript,
       acceptanceUrl: httpUrl(config.acceptanceUrl, `${projectId}.acceptanceUrl`),
-      ghExecutable: requiredString(config.ghExecutable ?? "gh", `${projectId}.ghExecutable`),
+      deploymentRecordUrl: httpUrl(
+        config.deploymentRecordUrl,
+        `${projectId}.deploymentRecordUrl`,
+      ),
+      implementationUrl: httpUrl(
+        config.implementationUrl ?? config.deploymentRecordUrl,
+        `${projectId}.implementationUrl`,
+      ),
+      shellExecutable: requiredString(
+        config.shellExecutable ?? "/bin/zsh",
+        `${projectId}.shellExecutable`,
+      ),
     }];
   }));
 }
@@ -72,144 +78,90 @@ export function deliveryBranchForTask(task) {
   return typeof branch === "string" && branch.trim() ? branch.trim() : null;
 }
 
-async function runGh(executable, args) {
-  const result = await execFileAsync(executable, args, {
-    encoding: "utf8",
-    maxBuffer: 10 * 1024 * 1024,
-  });
-  return result.stdout;
+export function deliveryWorkspaceForTask(task) {
+  if (task?.developmentContext?.type !== "worktree") return null;
+  const workspacePath = task.developmentContext.path;
+  return typeof workspacePath === "string" && workspacePath.trim()
+    ? path.resolve(workspacePath.trim())
+    : null;
 }
 
-function parseJson(output, operation) {
+function parseJson(output) {
   try {
     return JSON.parse(output);
   } catch {
-    throw new Error(`GitHub CLI returned invalid JSON while ${operation}`);
+    throw new Error("Local deployment returned invalid JSON");
   }
 }
 
-async function delay(milliseconds) {
-  await new Promise((resolve) => setTimeout(resolve, milliseconds));
+function taskNumber(identifier) {
+  const match = String(identifier ?? "").match(/(\d+)$/);
+  return match ? Number(match[1]) : null;
 }
 
-function validateManifest(manifest, deliveryId, config, pullRequest) {
+async function resolveDeployScript(workspacePath, relativeScript) {
+  const workspace = await realpath(workspacePath);
+  const script = await realpath(path.resolve(workspace, relativeScript));
+  if (script !== workspace && !script.startsWith(`${workspace}${path.sep}`)) {
+    throw new Error("Local deployment script must remain inside the bound worktree");
+  }
+  return { workspace, script };
+}
+
+function validateManifest(manifest, deliveryId, config, identifier) {
   if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)) {
-    throw new Error("Deployment workflow returned an invalid delivery manifest");
+    throw new Error("Local deployment returned an invalid delivery manifest");
   }
   if (manifest.deliveryId !== deliveryId) {
-    throw new Error("Deployment workflow returned a manifest for another delivery");
+    throw new Error("Local deployment returned a manifest for another delivery");
   }
-  const prNumbers = Array.isArray(manifest.prNumbers)
-    ? manifest.prNumbers.filter((value) => Number.isSafeInteger(value) && value > 0)
-    : [];
-  if (!prNumbers.includes(pullRequest.number)) {
-    throw new Error("Deployment manifest does not include the implementation PR");
-  }
+  const number = taskNumber(identifier);
   return {
-    implementationPr: pullRequest.url,
-    acceptanceUrl: httpUrl(manifest.acceptanceUrl ?? config.acceptanceUrl, "manifest.acceptanceUrl"),
-    workflowRun: httpUrl(manifest.workflowRun, "manifest.workflowRun"),
+    implementationPr: httpUrl(
+      manifest.implementationUrl ?? config.implementationUrl,
+      "manifest.implementationUrl",
+    ),
+    acceptanceUrl: httpUrl(
+      manifest.acceptanceUrl ?? config.acceptanceUrl,
+      "manifest.acceptanceUrl",
+    ),
+    workflowRun: httpUrl(
+      manifest.deploymentRecordUrl ?? config.deploymentRecordUrl,
+      "manifest.deploymentRecordUrl",
+    ),
     immutableTag: requiredString(manifest.immutableTag, "manifest.immutableTag"),
-    mergedSha: requiredString(manifest.mergedSha, "manifest.mergedSha"),
-    prNumbers,
+    mergedSha: requiredString(manifest.gitSha, "manifest.gitSha"),
+    prNumbers: number === null ? [] : [number],
   };
 }
 
-export async function runGitHubDelivery({
+async function runCommand(executable, args, options) {
+  return execFileAsync(executable, args, {
+    ...options,
+    encoding: "utf8",
+    maxBuffer: 10 * 1024 * 1024,
+  });
+}
+
+export async function runLocalDelivery({
   deliveryId,
-  branch,
+  workspacePath,
+  taskIdentifier,
   config,
   onUpdate = () => {},
-  command = runGh,
-  wait = delay,
-  pollIntervalMs = 10_000,
-  timeoutMs = 130 * 60_000,
+  command = runCommand,
 }) {
-  const gh = (args) => command(config.ghExecutable, args);
-  onUpdate({ status: "dispatching" });
-  const pullRequests = parseJson(await gh([
-    "pr", "list",
-    "--repo", config.repository,
-    "--head", branch,
-    "--state", "open",
-    "--limit", "20",
-    "--json", "number,url,headRefName,baseRefName",
-  ]), "finding the implementation PR");
-  const pullRequest = pullRequests.find((candidate) => (
-    candidate.headRefName === branch && candidate.baseRefName === config.baseRef
-  ));
-  if (!pullRequest) {
-    throw new Error(`No open ${config.repository} PR from '${branch}' to '${config.baseRef}'`);
-  }
-
-  const dispatchedAt = Date.now();
-  await gh([
-    "workflow", "run", config.workflow,
-    "--repo", config.repository,
-    "--ref", config.workflowRef,
-    "-f", `pr_numbers=${pullRequest.number}`,
-    "-f", `base_ref=${config.baseRef}`,
-    "-f", `deploy_channel=${config.deployChannel}`,
-    "-f", `delivery_id=${deliveryId}`,
-  ]);
-
-  const deadline = dispatchedAt + timeoutMs;
-  let workflowRun = null;
-  while (Date.now() < deadline && !workflowRun) {
-    const runs = parseJson(await gh([
-      "run", "list",
-      "--repo", config.repository,
-      "--workflow", config.workflow,
-      "--event", "workflow_dispatch",
-      "--limit", "30",
-      "--json", "databaseId,displayTitle,status,conclusion,url,createdAt",
-    ]), "finding the deployment run");
-    workflowRun = runs.find((candidate) => (
-      candidate.displayTitle === `Acceptance delivery ${deliveryId}`
-      && Date.parse(candidate.createdAt) >= dispatchedAt - 60_000
-    )) ?? null;
-    if (!workflowRun) await wait(pollIntervalMs);
-  }
-  if (!workflowRun) throw new Error("Timed out waiting for the deployment workflow to start");
-
+  const { workspace, script } = await resolveDeployScript(workspacePath, config.deployScript);
   onUpdate({
     status: "running",
-    pullRequestNumber: pullRequest.number,
-    implementationPr: pullRequest.url,
-    workflowRunId: workflowRun.databaseId,
-    workflowRunUrl: workflowRun.url,
+    workflowRunUrl: config.deploymentRecordUrl,
   });
-
-  while (Date.now() < deadline) {
-    workflowRun = parseJson(await gh([
-      "run", "view", String(workflowRun.databaseId),
-      "--repo", config.repository,
-      "--json", "databaseId,status,conclusion,url",
-    ]), "checking the deployment run");
-    if (workflowRun.status === "completed") break;
-    await wait(pollIntervalMs);
-  }
-  if (workflowRun?.status !== "completed") {
-    throw new Error("Timed out waiting for the deployment workflow to finish");
-  }
-  if (workflowRun.conclusion !== "success") {
-    throw new Error(`Deployment workflow finished with ${workflowRun.conclusion ?? "an unknown result"}`);
-  }
-
-  const temporaryDirectory = await mkdtemp(path.join(os.tmpdir(), "taskboard-delivery-"));
-  try {
-    await gh([
-      "run", "download", String(workflowRun.databaseId),
-      "--repo", config.repository,
-      "--name", `taskboard-delivery-${deliveryId}`,
-      "--dir", temporaryDirectory,
-    ]);
-    const manifest = parseJson(
-      await readFile(path.join(temporaryDirectory, "delivery-manifest.json"), "utf8"),
-      "reading the delivery manifest",
-    );
-    return validateManifest(manifest, deliveryId, config, pullRequest);
-  } finally {
-    await rm(temporaryDirectory, { recursive: true, force: true });
-  }
+  const { stdout } = await command(config.shellExecutable, [
+    script,
+    "--delivery-id", deliveryId,
+    "--acceptance-url", config.acceptanceUrl,
+    "--record-url", config.deploymentRecordUrl,
+    "--implementation-url", config.implementationUrl,
+  ], { cwd: workspace });
+  return validateManifest(parseJson(stdout), deliveryId, config, taskIdentifier);
 }

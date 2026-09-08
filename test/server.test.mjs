@@ -752,13 +752,16 @@ test("public product and technical roles complete an isolated product-to-develop
       codexStatePath: path.join(directory, "codex-state.json"),
       deliveryProjects: {
         skillhub: {
-          repository: "example/skillhub",
-          workflow: "pr-batch-test-deploy.yml",
+          mode: "local",
+          deployScript: "scripts/taskboard-local-acceptance-deploy.sh",
           acceptanceUrl: "https://test.example.com",
+          deploymentRecordUrl: "https://board.example.com/?project=skillhub",
         },
       },
-      deliveryRunner: async ({ deliveryId, branch, onUpdate }) => {
+      deliveryRunner: async ({ deliveryId, branch, workspacePath: deliveryWorkspace, taskIdentifier, onUpdate }) => {
         assert.equal(branch, "codex/install-feedback");
+        assert.equal(deliveryWorkspace, workspacePath);
+        assert.equal(taskIdentifier, "SKI-1");
         onUpdate({
           status: "running",
           pullRequestNumber: 42,
@@ -1055,7 +1058,11 @@ test("public product and technical roles complete an isolated product-to-develop
       version: approved.body.task.version,
       status: "in_progress",
       assigneeTarget: "current-user",
-      developmentContext: { type: "branch", branch: "codex/install-feedback" },
+      developmentContext: {
+        type: "worktree",
+        path: workspacePath,
+        branch: "codex/install-feedback",
+      },
     },
   });
   assert.equal(technicalTakeover.response.status, 200);
