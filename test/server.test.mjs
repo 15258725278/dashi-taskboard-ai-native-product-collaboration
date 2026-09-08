@@ -250,17 +250,33 @@ test("launcher mode proves service identity and hides every route behind its ins
 
 test("authenticated public mode treats the token-authenticated Codex panel as local admin", async () => {
   const instanceToken = "7a6f8d37-78ce-46c9-87a8-08e10db88da2";
+  const productPassword = "product-password";
   const baseUrl = await startServer(() => ({
     instanceToken,
     instanceSecret: "2e587946-96d6-47b5-930a-1ba70214fa88",
     processEnv: {
       ...process.env,
       CODEX_TASKBOARD_PUBLIC_USERS: JSON.stringify({
-        product: { password: "product-password", role: "product" },
+        product: { password: productPassword, role: "product" },
       }),
     },
   }));
   const launcherHeaders = { origin: "null" };
+
+  const publicLogin = await request(baseUrl, "/login", {
+    method: "POST",
+    redirect: "manual",
+    headers: {
+      "content-type": "application/x-www-form-urlencoded",
+      origin: "null",
+    },
+    body: new URLSearchParams({
+      username: "product",
+      password: productPassword,
+    }).toString(),
+  });
+  assert.equal(publicLogin.response.status, 303);
+  assert.equal(publicLogin.response.headers.get("location"), "./");
 
   const metadata = await request(baseUrl, `/${instanceToken}/api/meta`, {
     headers: launcherHeaders,
