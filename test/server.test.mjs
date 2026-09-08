@@ -1275,6 +1275,9 @@ test("public product and technical roles complete an isolated product-to-develop
   assert.equal(returned.body.task.status, "in_progress");
   assert.equal(returned.body.session.acceptanceStatus, "changes_requested");
   assert.equal(returned.body.session.acceptanceBy, "Product Owner");
+  assert.equal(returned.body.session.deliverySubmittedAt, null);
+  assert.equal(returned.body.session.implementationPr, null);
+  assert.equal(returned.body.session.testDeploymentUrl, null);
 
   const automaticResubmission = await request(
     baseUrl,

@@ -2303,12 +2303,25 @@ export class TaskboardDatabase {
       throw new ApiError(409, "DELIVERY_NOT_SUBMITTED", "Submit delivery evidence before product acceptance");
     }
     const timestamp = now();
-    this.database.prepare(`
-      UPDATE product_sessions
-      SET acceptance_status = ?, acceptance_note = ?, acceptance_at = ?,
-          acceptance_by = ?, updated_at = ?
-      WHERE id = ?
-    `).run(outcome, note, timestamp, actor.name, timestamp, id);
+    if (outcome === "changes_requested") {
+      this.database.prepare(`
+        UPDATE product_sessions
+        SET acceptance_status = ?, acceptance_note = ?, acceptance_at = ?,
+            acceptance_by = ?, delivery_note = '', delivery_submitted_at = NULL,
+            delivery_submitted_by = NULL, implementation_pr = NULL,
+            test_deployment_url = NULL, test_deployment_workflow_run = NULL,
+            test_deployment_immutable_tag = NULL, test_deployment_pr_numbers = '[]',
+            updated_at = ?
+        WHERE id = ?
+      `).run(outcome, note, timestamp, actor.name, timestamp, id);
+    } else {
+      this.database.prepare(`
+        UPDATE product_sessions
+        SET acceptance_status = ?, acceptance_note = ?, acceptance_at = ?,
+            acceptance_by = ?, updated_at = ?
+        WHERE id = ?
+      `).run(outcome, note, timestamp, actor.name, timestamp, id);
+    }
     return this.getProductSession(id);
   }
 
