@@ -54,7 +54,8 @@ test("local delivery runs the bound worktree script and reads its manifest", asy
 
 test("local delivery requires a worktree development context", () => {
   assert.equal(deliveryWorkspaceForTask({ developmentContext: { type: "branch", branch: "codex/x" } }), null);
+  const workspace = path.resolve("/tmp/worktree");
   assert.equal(deliveryWorkspaceForTask({
-    developmentContext: { type: "worktree", path: "/tmp/worktree", branch: "codex/x" },
-  }), "/tmp/worktree");
+    developmentContext: { type: "worktree", path: workspace, branch: "codex/x" },
+  }), workspace);
 });
