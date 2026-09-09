@@ -39,6 +39,7 @@ import {
 import { createJiraConfigStore } from "./jira-config.mjs";
 import { createJiraIntegration } from "./jira-integration.mjs";
 import { ProjectSummaryService } from "./project-summary.mjs";
+import { productSourceBaselinePrompt, resolveProductSourceBaseline } from "./product-source-baseline.mjs";
 
 const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const execFileAsync = promisify(execFile);
@@ -1529,13 +1530,14 @@ function parseProductAcceptance(body) {
   return { outcome, note };
 }
 
-function productAgentPrompt(session, message) {
+function productAgentPrompt(session, message, sourceBaseline) {
   const currentDocument = session.productDocument.trim()
     ? session.productDocument
     : "（尚未形成产品方案）";
   return [
     "你是当前项目的产品协作 Agent。你的职责是通过多轮对话澄清业务问题，并帮助产品同学形成可交付给技术团队的产品方案。",
-    "开始提出产品方案前，先只读检查当前项目源码、docs/blueprint.md、docs/blueprint/ 和相关现有文档，确认当前能力、可复用入口与真实约束。",
+    "开始提出产品方案前，先按以下源码基准只读检查项目源码、蓝图和相关现有文档，确认当前能力、可复用入口与真实约束。",
+    productSourceBaselinePrompt(sourceBaseline),
     "你可以读取当前项目中的完整源码，但不得修改任何文件、运行部署、提交代码或声称已经完成技术实现。",
     `当前功能交付目录：${session.artifactPath ?? "由系统创建后提供"}。产品文档由 Taskboard 保存，Agent 不直接写文件。`,
     "优先提出少量关键问题；存在会改变范围或用户行为的未决问题时继续提问，不要假装方案已经就绪。",
@@ -3795,12 +3797,17 @@ export function createTaskboardServer(options = {}) {
           AI_CHAT_TURN_BODY_LIMIT,
           "Product conversation turn cannot exceed 25 MiB",
         ));
-        await requireProductProjectWorkspace(session);
+        const workspacePath = await requireProductProjectWorkspace(session);
+        const sourceBaseline = await resolveProductSourceBaseline(
+          workspacePath,
+          path.join(resolved.dataDirectory, "product-source-baselines"),
+          codexProcessEnvironment,
+        );
         const run = await aiChat.startTurn(session.aiThreadId, {
           ...turn,
-          message: productAgentPrompt(productSessionWithArtifactPath(session), turn.message),
+          message: productAgentPrompt(productSessionWithArtifactPath(session), turn.message, sourceBaseline),
           skillIds: [],
-        });
+        }, { productSourceDirectory: sourceBaseline.sourceDirectory });
         return sendJson(response, 202, { run: productRunForResponse(run) });
       }
 

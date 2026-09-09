@@ -496,7 +496,7 @@ export class AiChatService {
     return this.database.deleteAiChatThread(threadId);
   }
 
-  async startTurn(threadId, input) {
+  async startTurn(threadId, input, { productSourceDirectory = null } = {}) {
     let thread = this.getThread(threadId);
     if (this.#threadIsActive(thread)) {
       throw new ApiError(
@@ -581,7 +581,7 @@ export class AiChatService {
         thread,
         resolved.addDirectories,
         imagePaths,
-        { productAgent: isCollaborationThread, productAgentConfigArgs },
+        { productAgent: isCollaborationThread, productAgentConfigArgs, productSourceDirectory },
       );
       const prompt = buildCodexPrompt(
         thread,
