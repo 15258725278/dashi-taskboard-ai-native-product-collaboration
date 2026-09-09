@@ -3109,8 +3109,8 @@ export function App() {
           ?? deviceWorkspacePaths[task.projectId]
           ?? taskboardProject?.workspacePath;
     const embeddedInstruction = text(
-      `[$manage-taskboard](${manageTaskboardSkillPath}) 议题 ID：${task.identifier}`,
-      `[$manage-taskboard](${manageTaskboardSkillPath}) Issue ID: ${task.identifier}`,
+      `[$manage-taskboard](${manageTaskboardSkillPath}) 议题 ID：${task.identifier}\n先运行 command -v taskctl，并使用返回的绝对路径访问当前 Taskboard。只有该命令不可用时才报告 CLI 缺失；不要假定 /Applications/Codex Taskboard.app 已安装。`,
+      `[$manage-taskboard](${manageTaskboardSkillPath}) Issue ID: ${task.identifier}\nRun command -v taskctl first and use the returned absolute path for the active Taskboard. Report a missing CLI only when that command fails; do not assume /Applications/Codex Taskboard.app is installed.`,
     );
 
     if (

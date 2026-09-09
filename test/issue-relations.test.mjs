@@ -68,3 +68,10 @@ test("the taskboard skill tracks substantive requests before implementation", ()
   assert.match(cliReference, /--type parent/);
   assert.match(cliReference, /--type blocks\|blocked_by\|related/);
 });
+
+test("task launches resolve the active taskctl before assuming a packaged app", () => {
+  assert.match(appSource, /先运行 command -v taskctl/);
+  assert.match(appSource, /do not assume \/Applications\/Codex Taskboard\.app is installed/);
+  assert.match(skillSource, /first resolve `taskctl`[\s\S]*`command -v taskctl`/);
+  assert.match(skillSource, /Never assume the standalone Taskboard app is installed/);
+});

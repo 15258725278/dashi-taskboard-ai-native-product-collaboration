@@ -12,8 +12,8 @@ Open only the relevant section of [references/cli.md](references/cli.md) when co
 ## Select the CLI and active service
 
 - Use the exact `taskctl` binary and Taskboard URL supplied by the task or injected runtime. Do not replace them with a global CLI, the default port, or another board.
-- On macOS, when no binary is injected and the desktop app is installed, use `'/Applications/Codex Taskboard.app/Contents/Resources/bin/taskctl' issue get ID --json`. Keep the single quotes because the path contains a space. The packaged wrapper reads the active launcher runtime; do not search the filesystem for another CLI or reconstruct the tokenized URL.
-- On Linux, when no binary is injected and Codex was started by the desktop app, use `taskctl issue get ID --json`. The desktop app adds its packaged wrapper to the managed Codex `PATH`; do not search the filesystem for another CLI or reconstruct the tokenized URL.
+- When no binary is injected, first resolve `taskctl` from the managed shell `PATH` with `command -v taskctl`, then use the returned absolute path. Source checkouts can provide it with `npm link`, while packaged desktop launches add their wrapper to `PATH`. Do not report the CLI as missing before this check.
+- On macOS, `'/Applications/Codex Taskboard.app/Contents/Resources/bin/taskctl'` is only a fallback when that exact file exists and is executable. Never assume the standalone Taskboard app is installed. On Linux, use the same `PATH` resolution rule. Do not search the filesystem for another CLI or reconstruct the tokenized URL.
 - If that exact command reaches a sandbox restriction on the loopback service, retry the same command with the required permission. Do not switch binaries or endpoints.
 
 ## Terminology: local companion
