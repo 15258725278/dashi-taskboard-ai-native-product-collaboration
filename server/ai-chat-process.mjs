@@ -10,11 +10,14 @@ const MAX_CODEX_JSONL_LINE_BYTES = 16 * 1024 * 1024;
 const SKILL_MARKER = "\uFFFC";
 const TURN_OWNER_PATH = fileURLToPath(new URL("./ai-turn-owner.mjs", import.meta.url));
 const PRODUCT_AGENT_PERMISSION_PROFILE = "taskboard-product-agent";
-const PRODUCT_AGENT_PERMISSION_CONFIG = [
-  `permissions.${PRODUCT_AGENT_PERMISSION_PROFILE}=`,
-  '{workspace_roots={"."=true},',
-  'filesystem={":minimal"="read",":workspace_roots"="read"}}',
-].join("");
+function productAgentPermissionConfig(sourceDirectory) {
+  const sourceRoot = sourceDirectory ? `,${JSON.stringify(sourceDirectory)}=true` : "";
+  return [
+    `permissions.${PRODUCT_AGENT_PERMISSION_PROFILE}=`,
+    `{workspace_roots={"."=true${sourceRoot}},`,
+    'filesystem={":minimal"="read",":workspace_roots"="read"}}',
+  ].join("");
+}
 const ITEM_TYPES = new Set([
   "agent_message",
   "command_execution",
@@ -173,7 +176,7 @@ export function buildCodexArgs(
   thread,
   addDirectories,
   imagePaths = [],
-  { productAgent = false, productAgentConfigArgs = [] } = {},
+  { productAgent = false, productAgentConfigArgs = [], productSourceDirectory = null } = {},
 ) {
   const permission = thread.sandbox === "read-only"
     ? {
@@ -230,7 +233,7 @@ export function buildCodexArgs(
       "-c",
       `default_permissions="${PRODUCT_AGENT_PERMISSION_PROFILE}"`,
       "-c",
-      PRODUCT_AGENT_PERMISSION_CONFIG,
+      productAgentPermissionConfig(productSourceDirectory),
       "-c",
       'approval_policy="never"',
       "-c",
