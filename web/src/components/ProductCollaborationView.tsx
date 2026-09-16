@@ -27,7 +27,7 @@ import {
   updateProductSessionAgentSettings,
   updateTechnicalSessionAgentSettings,
 } from "../api";
-import { reasoningEffortForModel } from "../aiChatState";
+import { normalizeChatSelection, reasoningEffortForModel } from "../aiChatState";
 import { useTaskboardI18n } from "../i18n";
 import type {
   AiChatModel,
@@ -240,13 +240,41 @@ export function ProductCollaborationView({
       reasoningEffort: model.defaultReasoningEffort,
     } : null;
   }, [models]);
-  const activeAgentSettings = technicalMode
+  const persistedAgentSettings = technicalMode
     ? snapshot?.technicalAgent ?? defaultAgentSettings
     : snapshot?.productAgent ?? defaultAgentSettings;
+  const activeAgentSettings = useMemo(() => (
+    persistedAgentSettings
+      ? normalizeChatSelection(
+        models,
+        persistedAgentSettings.model,
+        persistedAgentSettings.reasoningEffort,
+      ) ?? persistedAgentSettings
+      : null
+  ), [models, persistedAgentSettings]);
   const activeModel = models.find((model) => model.slug === activeAgentSettings?.model) ?? models[0];
   const canConfigureAgent = technicalMode
     ? canTechnicalWrite && !technicalApproved
     : canWrite && !isApproved;
+  const activeAgentSettingsChanged = Boolean(
+    persistedAgentSettings
+      && activeAgentSettings
+      && (persistedAgentSettings.model !== activeAgentSettings.model
+        || persistedAgentSettings.reasoningEffort !== activeAgentSettings.reasoningEffort),
+  );
+
+  useEffect(() => {
+    if (!snapshot || !activeAgentSettings || !activeAgentSettingsChanged || !canConfigureAgent || isRunning) {
+      return;
+    }
+    void saveAgentSettings(activeAgentSettings);
+  }, [
+    activeAgentSettings,
+    activeAgentSettingsChanged,
+    canConfigureAgent,
+    isRunning,
+    snapshot,
+  ]);
 
   const sessionStage = useCallback((session: ProductSession) => {
     const task = session.technicalTaskId
