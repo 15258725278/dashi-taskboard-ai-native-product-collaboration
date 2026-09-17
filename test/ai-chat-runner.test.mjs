@@ -34,6 +34,7 @@ test("product Agent config keeps only non-secret model provider connection field
   try {
     await writeFile(path.join(directory, "config.toml"), [
       'model_provider = "PrivateProvider"',
+      'model_catalog_json = "catalog.json"',
       "",
       '[model_providers.PrivateProvider]',
       'name = "Private Provider"',
@@ -46,13 +47,16 @@ test("product Agent config keeps only non-secret model provider connection field
       'authorization = "must-not-leak"',
     ].join("\n"));
     const args = await loadProductAgentConfigArgs(path.join(directory, ".codex-global-state.json"));
-    assert.deepEqual(args, [
+    assert.deepEqual(args.args, [
       "-c",
       'model_provider="PrivateProvider"',
       "-c",
-      'model_providers={PrivateProvider={name="Private Provider",base_url="https://models.example.test",wire_api="responses",supports_websockets=true,requires_openai_auth=true}}',
+      'model_providers={PrivateProvider={name="Private Provider",base_url="https://models.example.test",wire_api="responses",supports_websockets=true,requires_openai_auth=true,env_key="CODEX_PRODUCT_AGENT_PROVIDER_BEARER_TOKEN"}}',
+      "-c",
+      'model_catalog_json="catalog.json"',
     ]);
-    assert.equal(JSON.stringify(args).includes("must-not-leak"), false);
+    assert.equal(args.env.CODEX_PRODUCT_AGENT_PROVIDER_BEARER_TOKEN, "must-not-leak");
+    assert.equal(JSON.stringify(args.args).includes("must-not-leak"), false);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
