@@ -32,6 +32,7 @@ import { useTaskboardI18n } from "../i18n";
 import type {
   AiChatModel,
   AiChatAttachmentInput,
+  ProductCollaborationCatalog,
   ProductAgentSettings,
   ProductAiEvent,
   ProductSession,
@@ -158,6 +159,22 @@ export function ProductCollaborationView({
     )));
   }, []);
 
+  const applyCatalog = useCallback((catalog: ProductCollaborationCatalog) => {
+    setModels(catalog.models);
+    const normalized = normalizeChatSelection(catalog.models, newModel, newReasoningEffort);
+    if (normalized) {
+      setNewModel(normalized.model);
+      setNewReasoningEffort(normalized.reasoningEffort);
+    }
+  }, [newModel, newReasoningEffort]);
+
+  const applyInitialCatalog = useCallback((catalog: ProductCollaborationCatalog) => {
+    setModels(catalog.models);
+    const defaultModel = catalog.models[0];
+    setNewModel(defaultModel?.slug ?? "");
+    setNewReasoningEffort(defaultModel?.defaultReasoningEffort ?? "");
+  }, []);
+
   useEffect(() => {
     setPage(1);
     setSessionQuery("");
@@ -170,17 +187,28 @@ export function ProductCollaborationView({
     const controller = new AbortController();
     setModels([]);
     void getProductCollaborationCatalog(projectId, controller.signal)
-      .then((catalog) => {
-        setModels(catalog.models);
-        const defaultModel = catalog.models[0];
-        setNewModel(defaultModel?.slug ?? "");
-        setNewReasoningEffort(defaultModel?.defaultReasoningEffort ?? "");
-      })
+      .then(applyInitialCatalog)
       .catch((error) => {
         if (!controller.signal.aborted) onError(error);
       });
     return () => controller.abort();
-  }, [onError, projectId]);
+  }, [applyInitialCatalog, onError, projectId]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    const refreshCatalog = () => {
+      void getProductCollaborationCatalog(projectId, controller.signal)
+        .then((catalog) => applyCatalog(catalog))
+        .catch((error) => {
+          if (!controller.signal.aborted) onError(error);
+        });
+    };
+    window.addEventListener("focus", refreshCatalog);
+    return () => {
+      controller.abort();
+      window.removeEventListener("focus", refreshCatalog);
+    };
+  }, [applyCatalog, onError, projectId]);
 
   useEffect(() => {
     void refreshList().catch(onError);

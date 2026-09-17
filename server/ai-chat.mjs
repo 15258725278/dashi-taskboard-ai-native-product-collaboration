@@ -32,6 +32,7 @@ const CODEX_IMAGE_TYPES = new Set([
 ]);
 const PRODUCT_PROVIDER_STRING_FIELDS = ["name", "base_url", "wire_api"];
 const PRODUCT_PROVIDER_BOOLEAN_FIELDS = ["supports_websockets", "requires_openai_auth"];
+const PRODUCT_PROVIDER_TOKEN_ENV = "CODEX_PRODUCT_AGENT_PROVIDER_BEARER_TOKEN";
 
 function tomlLiteral(value) {
   if (typeof value === "boolean" || typeof value === "number") return String(value);
@@ -42,7 +43,15 @@ function tomlKey(value) {
   return /^[A-Za-z0-9_-]+$/.test(value) ? value : JSON.stringify(value);
 }
 
+function expandConfigPath(value) {
+  if (value === "~") return os.homedir();
+  if (value.startsWith("~/")) return path.join(os.homedir(), value.slice(2));
+  return value;
+}
+
 export async function loadProductAgentConfigArgs(codexStatePath) {
+  const args = [];
+  const env = {};
   try {
     const configPath = path.join(path.dirname(codexStatePath), "config.toml");
     const config = parseToml(await readFile(configPath, "utf8"));
@@ -50,28 +59,41 @@ export async function loadProductAgentConfigArgs(codexStatePath) {
       ? config.model_provider.trim()
       : "";
     const provider = providerId && config.model_providers?.[providerId];
-    if (!provider || typeof provider !== "object" || Array.isArray(provider)) return [];
-    const fields = [];
-    for (const field of PRODUCT_PROVIDER_STRING_FIELDS) {
-      if (typeof provider[field] === "string" && provider[field].trim()) {
-        fields.push(`${tomlKey(field)}=${tomlLiteral(provider[field])}`);
+    if (provider && typeof provider === "object" && !Array.isArray(provider)) {
+      const fields = [];
+      for (const field of PRODUCT_PROVIDER_STRING_FIELDS) {
+        if (typeof provider[field] === "string" && provider[field].trim()) {
+          fields.push(`${tomlKey(field)}=${tomlLiteral(provider[field])}`);
+        }
+      }
+      for (const field of PRODUCT_PROVIDER_BOOLEAN_FIELDS) {
+        if (typeof provider[field] === "boolean") {
+          fields.push(`${tomlKey(field)}=${tomlLiteral(provider[field])}`);
+        }
+      }
+      if (typeof provider.experimental_bearer_token === "string" && provider.experimental_bearer_token) {
+        fields.push(`env_key=${tomlLiteral(PRODUCT_PROVIDER_TOKEN_ENV)}`);
+        env[PRODUCT_PROVIDER_TOKEN_ENV] = provider.experimental_bearer_token;
+      }
+      if (fields.length > 0) {
+        args.push(
+          "-c",
+          `model_provider=${tomlLiteral(providerId)}`,
+          "-c",
+          `model_providers={${tomlKey(providerId)}={${fields.join(",")}}}`,
+        );
       }
     }
-    for (const field of PRODUCT_PROVIDER_BOOLEAN_FIELDS) {
-      if (typeof provider[field] === "boolean") {
-        fields.push(`${tomlKey(field)}=${tomlLiteral(provider[field])}`);
-      }
+    if (typeof config.model_catalog_json === "string" && config.model_catalog_json.trim()) {
+      args.push(
+        "-c",
+        `model_catalog_json=${tomlLiteral(expandConfigPath(config.model_catalog_json.trim()))}`,
+      );
     }
-    if (fields.length === 0) return [];
-    return [
-      "-c",
-      `model_provider=${tomlLiteral(providerId)}`,
-      "-c",
-      `model_providers={${tomlKey(providerId)}={${fields.join(",")}}}`,
-    ];
   } catch {
-    return [];
+    return { args, env };
   }
+  return { args, env };
 }
 
 function cappedError(value) {
@@ -189,8 +211,8 @@ export class AiChatService {
     this.codexStatePath = options.codexStatePath;
     this.manageTaskboardSkillPath = options.manageTaskboardSkillPath;
     this.processEnv = options.processEnv ?? process.env;
-    this.productAgentConfigArgs = options.productAgentConfigArgs
-      ? Promise.resolve(options.productAgentConfigArgs)
+    this.productAgentConfig = options.productAgentConfig
+      ? Promise.resolve(options.productAgentConfig)
       : loadProductAgentConfigArgs(this.codexStatePath);
     this.killGraceMs = options.killGraceMs ?? 1_000;
     this.appServer = options.appServer ?? new CodexAppServer({
@@ -574,14 +596,18 @@ export class AiChatService {
         this.database.getProductSessionByAiThreadId?.(thread.id)
         || this.database.getProductSessionByTechnicalAiThreadId?.(thread.id),
       );
-      const productAgentConfigArgs = isCollaborationThread
-        ? await this.productAgentConfigArgs
-        : [];
+      const productAgentConfig = isCollaborationThread
+        ? await this.productAgentConfig
+        : { args: [], env: {} };
       const args = buildCodexArgs(
         thread,
         resolved.addDirectories,
         imagePaths,
-        { productAgent: isCollaborationThread, productAgentConfigArgs, productSourceDirectory },
+        {
+          productAgent: isCollaborationThread,
+          productAgentConfigArgs: productAgentConfig.args,
+          productSourceDirectory,
+        },
       );
       const prompt = buildCodexPrompt(
         thread,
@@ -622,7 +648,7 @@ export class AiChatService {
         executable: this.codexExecutable,
         args,
         prompt,
-        env: this.processEnv,
+        env: { ...this.processEnv, ...productAgentConfig.env },
         onRawEvent: (raw) => {
           const normalized = normalizeCodexEvent(raw);
           if (!normalized) return;
