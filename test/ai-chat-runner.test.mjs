@@ -62,6 +62,44 @@ test("product Agent config keeps only non-secret model provider connection field
   }
 });
 
+test("product Agent config can use a dedicated deployment configuration", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "taskboard-product-provider-"));
+  try {
+    await writeFile(path.join(directory, "default-config.toml"), [
+      'model_provider = "UserProvider"',
+    ].join("\n"));
+    await writeFile(path.join(directory, "product-config.toml"), [
+      'model_provider = "DeploymentProvider"',
+      `model_catalog_json = ${JSON.stringify(path.join(directory, "catalog.json"))}`,
+      "",
+      "[model_providers.DeploymentProvider]",
+      'name = "Deployment Provider"',
+      'base_url = "https://models.example.test"',
+      'wire_api = "responses"',
+      'experimental_bearer_token = "must-not-leak"',
+    ].join("\n"));
+    const args = await loadProductAgentConfigArgs(
+      path.join(directory, ".codex-global-state.json"),
+      {
+        HOME: directory,
+        CODEX_PRODUCT_AGENT_CONFIG: path.join(directory, "product-config.toml"),
+      },
+    );
+    assert.deepEqual(args.args, [
+      "-c",
+      'model_provider="DeploymentProvider"',
+      "-c",
+      'model_providers={DeploymentProvider={name="Deployment Provider",base_url="https://models.example.test",wire_api="responses",env_key="CODEX_PRODUCT_AGENT_PROVIDER_BEARER_TOKEN"}}',
+      "-c",
+      `model_catalog_json="${path.join(directory, "catalog.json")}"`,
+    ]);
+    assert.equal(args.env.CODEX_PRODUCT_AGENT_PROVIDER_BEARER_TOKEN, "must-not-leak");
+    assert.equal(JSON.stringify(args.args).includes("UserProvider"), false);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 async function createComposerCatalogFixture(issueSlashCommands) {
   const directory = await mkdtemp(path.join(os.tmpdir(), "taskboard-composer-catalog-"));
   const agentsDirectory = path.join(directory, "agents");

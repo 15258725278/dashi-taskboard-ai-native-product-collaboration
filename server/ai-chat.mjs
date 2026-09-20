@@ -49,11 +49,15 @@ function expandConfigPath(value) {
   return value;
 }
 
-export async function loadProductAgentConfigArgs(codexStatePath) {
+export async function loadProductAgentConfigArgs(codexStatePath, processEnv = process.env) {
   const args = [];
   const env = {};
   try {
-    const configPath = path.join(path.dirname(codexStatePath), "config.toml");
+    const configuredPath = typeof processEnv.CODEX_PRODUCT_AGENT_CONFIG === "string"
+      && processEnv.CODEX_PRODUCT_AGENT_CONFIG.trim()
+      ? expandConfigPath(processEnv.CODEX_PRODUCT_AGENT_CONFIG.trim())
+      : null;
+    const configPath = configuredPath ?? path.join(path.dirname(codexStatePath), "config.toml");
     const config = parseToml(await readFile(configPath, "utf8"));
     const providerId = typeof config.model_provider === "string"
       ? config.model_provider.trim()
@@ -213,7 +217,7 @@ export class AiChatService {
     this.processEnv = options.processEnv ?? process.env;
     this.productAgentConfig = options.productAgentConfig
       ? Promise.resolve(options.productAgentConfig)
-      : loadProductAgentConfigArgs(this.codexStatePath);
+      : loadProductAgentConfigArgs(this.codexStatePath, this.processEnv);
     this.killGraceMs = options.killGraceMs ?? 1_000;
     this.appServer = options.appServer ?? new CodexAppServer({
       executable: this.codexExecutable,
