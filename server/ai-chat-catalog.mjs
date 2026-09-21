@@ -992,9 +992,18 @@ export async function discoverAiCatalog({
   codexExecutable,
   workspacePath,
   processEnv,
+  configArgs = [],
+  configEnv = {},
 }) {
-  const environment = withoutTaskboardLauncherEnvironment(processEnv);
-  const modelCommand = executableCommand(codexExecutable, ["debug", "models"]);
+  const environment = {
+    ...withoutTaskboardLauncherEnvironment(processEnv),
+    ...configEnv,
+  };
+  const modelCommand = executableCommand(codexExecutable, [
+    "debug",
+    "models",
+    ...configArgs,
+  ]);
   const [modelResult, skillEntries, commands] = await Promise.all([
     execFileAsync(modelCommand.executable, modelCommand.args, {
       cwd: workspacePath,

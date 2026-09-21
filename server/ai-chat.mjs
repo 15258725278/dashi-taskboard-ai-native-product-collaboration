@@ -216,8 +216,12 @@ export class AiChatService {
     this.manageTaskboardSkillPath = options.manageTaskboardSkillPath;
     this.processEnv = options.processEnv ?? process.env;
     this.productAgentConfig = options.productAgentConfig
-      ? Promise.resolve(options.productAgentConfig)
-      : loadProductAgentConfigArgs(this.codexStatePath, this.processEnv);
+      ? async () => options.productAgentConfig
+      : async () => {
+        const processEnv = { ...this.processEnv };
+        delete processEnv.CODEX_PRODUCT_AGENT_CONFIG;
+        return loadProductAgentConfigArgs(this.codexStatePath, processEnv);
+      };
     this.killGraceMs = options.killGraceMs ?? 1_000;
     this.appServer = options.appServer ?? new CodexAppServer({
       executable: this.codexExecutable,
@@ -352,6 +356,33 @@ export class AiChatService {
     });
   }
 
+  async #productCatalogForWorkspace(workspacePath) {
+    const productAgentConfig = await this.productAgentConfig();
+    return discoverAiCatalog({
+      codexExecutable: this.codexExecutable,
+      workspacePath,
+      processEnv: this.processEnv,
+      configArgs: productAgentConfig.args,
+      configEnv: productAgentConfig.env,
+    });
+  }
+
+  async getProductCollaborationCatalog(projectId) {
+    const resolved = await this.resolveContext(projectId, undefined);
+    return this.#productCatalogForWorkspace(resolved.workspacePath);
+  }
+
+  async #catalogForThread(thread) {
+    const resolved = await this.#resolveContextForThread(thread);
+    const isCollaborationThread = Boolean(
+      this.database.getProductSessionByAiThreadId?.(thread.id)
+      || this.database.getProductSessionByTechnicalAiThreadId?.(thread.id),
+    );
+    return isCollaborationThread
+      ? this.#productCatalogForWorkspace(resolved.workspacePath)
+      : this.getCatalog(thread.origin.projectId, resolved, codexTargetFromOrigin(thread.origin));
+  }
+
   async getCatalog(projectId, resolvedContext, codexTarget) {
     const resolved = resolvedContext ?? await this.resolveContext(projectId, undefined, codexTarget);
     if (resolved.codexProjectKind === "remote") {
@@ -452,7 +483,9 @@ export class AiChatService {
   async createThread(input) {
     const codexTarget = input.codexProjectKind === "remote" ? input : undefined;
     const resolved = await this.resolveContext(input.projectId, input.issueId, codexTarget);
-    const catalog = await this.getCatalog(input.projectId, resolved, codexTarget);
+    const catalog = input.productAgent === true
+      ? await this.#productCatalogForWorkspace(resolved.workspacePath)
+      : await this.getCatalog(input.projectId, resolved, codexTarget);
     const model = this.#resolveModel(catalog, input.model);
     const reasoningEffort = input.reasoningEffort ?? model.defaultReasoningEffort;
     this.#validateReasoningEffort(model, reasoningEffort);
@@ -489,11 +522,7 @@ export class AiChatService {
 
     if (Object.hasOwn(changes, "sandbox")) this.#validateSandbox(changes.sandbox);
     if (Object.hasOwn(changes, "model") || Object.hasOwn(changes, "reasoningEffort")) {
-      const catalog = await this.getCatalog(
-        thread.origin.projectId,
-        undefined,
-        codexTargetFromOrigin(thread.origin),
-      );
+      const catalog = await this.#catalogForThread(thread);
       thread = this.getThread(threadId);
       const model = this.#resolveModel(catalog, changes.model ?? thread.model);
       const reasoningEffort = changes.reasoningEffort ?? thread.reasoningEffort;
@@ -545,7 +574,7 @@ export class AiChatService {
 
     const codexTarget = codexTargetFromOrigin(thread.origin);
     const resolved = await this.#resolveContextForThread(thread);
-    const catalog = await this.getCatalog(thread.origin.projectId, resolved, codexTarget);
+    const catalog = await this.#catalogForThread(thread);
 
     thread = this.getThread(threadId);
     if (this.#threadIsActive(thread)) {
@@ -601,7 +630,7 @@ export class AiChatService {
         || this.database.getProductSessionByTechnicalAiThreadId?.(thread.id),
       );
       const productAgentConfig = isCollaborationThread
-        ? await this.productAgentConfig
+        ? await this.productAgentConfig()
         : { args: [], env: {} };
       const args = buildCodexArgs(
         thread,

@@ -2984,6 +2984,7 @@ export function createTaskboardServer(options = {}) {
       issueId: session.technicalTaskId,
       title: `技术方案 · ${session.title}`,
       sandbox: "read-only",
+      productAgent: true,
     });
     try {
       return database.attachTechnicalAiThread(session.id, thread.id);
@@ -3691,7 +3692,7 @@ export function createTaskboardServer(options = {}) {
           "GET /api/product-collaboration/catalog",
         );
         const projectId = validateProjectId(url.searchParams.get("projectId") ?? undefined);
-        const catalog = await aiChat.getCatalog(projectId);
+        const catalog = await aiChat.getProductCollaborationCatalog(projectId);
         return sendJson(response, 200, { models: catalog.models });
       }
 
@@ -3715,6 +3716,7 @@ export function createTaskboardServer(options = {}) {
             model: input.model,
             reasoningEffort: input.reasoningEffort,
             sandbox: "read-only",
+            productAgent: true,
           });
           try {
             const session = database.createProductSession({
